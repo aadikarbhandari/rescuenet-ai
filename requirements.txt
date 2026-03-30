@@ -1,0 +1,8 @@
+fastapi         # A Python framework for building web APIs very quickly.
+uvicorn         # A web server that allows you to run FastAPI.
+streamlit       # Enables the creation of interactive web interfaces very easily in Python.
+opencv-python   # A library for image and video processing.
+numpy           # A fundamental library for scientific computing.
+langchain       # A framework for building applications with language models (LLMs).
+langgraph       # An extension of LangChain for managing complex workflows as graphs.
+ultralytics     # YOLOv8 A real-time object detection model.
