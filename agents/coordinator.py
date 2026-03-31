@@ -60,7 +60,7 @@ class CoordinatorAgent:
         # Collect drones that are already busy with active missions (from fleet.assignments)
         busy_drones = set()
         for mission_id, assign in self.fleet.assignments.items():
-            if not assign.completed:
+            if getattr(assign, 'status', 'pending') != 'completed':
                 busy_drones.add(assign.drone_id)
 
         for victim in prioritized:
@@ -144,7 +144,7 @@ class CoordinatorAgent:
         # Collect drones that are already busy with active missions
         busy_drones = set()
         for mission_id, assign in self.fleet.assignments.items():
-            if not assign.completed:
+            if getattr(assign, 'status', 'pending') != 'completed':
                 busy_drones.add(assign.drone_id)
 
         for drone_id, drone in self.fleet.drones.items():

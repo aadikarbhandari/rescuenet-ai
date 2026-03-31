@@ -49,14 +49,13 @@ class FleetState:
 
     def add_or_update_victim(self, victim_state: VictimState) -> None:
         # If victim already exists, preserve assignment-related fields
-        existing = self.victims.get(victim_state.id)
+        existing = self.victims.get(victim_state.victim_id)
         if existing is not None:
             # Keep assignment state from existing victim
             victim_state.assigned_drone = existing.assigned_drone
             victim_state.mission_id = existing.mission_id
-            victim_state.status = existing.status
-        # Update the victim entry
-        self.victims[victim_state.id] = victim_state
+            # Update the victim entry
+        self.victims[victim_state.victim_id] = victim_state
         """Insert or update a victim's state."""
         self.victims[victim_state.victim_id] = victim_state
 
