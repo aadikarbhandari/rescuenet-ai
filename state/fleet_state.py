@@ -17,6 +17,7 @@ class DroneState:
     temperature_c: float
     visibility_m: float
     current_mission: Optional[str] = None     # Current task ID or None
+    operational_status: str = "available"     # "available", "on_mission", "returning_to_base", "charging"
 
 @dataclass
 class VictimState:
@@ -117,10 +118,14 @@ class FleetState:
         if drone.visibility_m < 50.0:
             return False, f"Visibility too low ({drone.visibility_m} m)."
 
-        # Already on a mission?
+        # Already on a mission or not operationally available?
         if drone.current_mission is not None:
             # Allow if the mission is nearly done? For simplicity, reject.
             return False, f"Drone already assigned to mission {drone.current_mission}."
+        
+        # Check operational status
+        if drone.operational_status != "available":
+            return False, f"Drone not available (status: {drone.operational_status})."
 
         return True, ""
 
@@ -138,8 +143,8 @@ class FleetState:
         target_x, target_y, _ = location  # assume (x, y, z)
 
         for drone_id, drone in self.drones.items():
-            # Skip if already on a mission
-            if drone.current_mission is not None:
+            # Skip if already on a mission or not available
+            if drone.current_mission is not None or drone.operational_status != "available":
                 continue
 
             # Quick eligibility - use same duration as coordinator (15.0 minutes) for consistency

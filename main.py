@@ -2,6 +2,7 @@
 RescueNet AI - Main simulation loop.
 """
 import sys
+import argparse
 sys.path.append('.')  # ensure local imports work
 
 from simulation.mock_env import MockDisasterEnv
@@ -11,6 +12,10 @@ from agents.triage import TriageAgent, TriageVictim
 from agents.coordinator import CoordinatorAgent
 
 def main():
+    parser = argparse.ArgumentParser(description='RescueNet AI Simulation')
+    parser.add_argument('--ticks', type=int, default=5, help='Number of simulation ticks to run')
+    args = parser.parse_args()
+    
     print("=== RescueNet AI Simulation Start ===")
     print()
 
@@ -32,7 +37,7 @@ def main():
     print()
 
     # 4. Run simulation for several ticks
-    total_ticks = 5
+    total_ticks = args.ticks
     all_assignments = []
 
     for tick in range(1, total_ticks + 1):  # Start at 1 to match env.tick

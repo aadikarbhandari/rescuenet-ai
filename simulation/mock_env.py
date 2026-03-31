@@ -30,7 +30,8 @@ class MockDisasterEnv:
                 "wind_speed_ms": 2.5,
                 "temperature_c": 22.0,
                 "visibility_m": 1000.0,
-                "current_mission": None
+                "current_mission": None,
+                "operational_status": "available"
             },
             {
                 "drone_id": "drone_2",
@@ -43,7 +44,8 @@ class MockDisasterEnv:
                 "wind_speed_ms": 3.0,
                 "temperature_c": 21.5,
                 "visibility_m": 800.0,
-                "current_mission": None
+                "current_mission": None,
+                "operational_status": "available"
             },
             {
                 "drone_id": "drone_3",
@@ -56,7 +58,8 @@ class MockDisasterEnv:
                 "wind_speed_ms": 4.2,
                 "temperature_c": 23.0,
                 "visibility_m": 1200.0,
-                "current_mission": None
+                "current_mission": None,
+                "operational_status": "available"
             }
         ]
 
@@ -130,8 +133,8 @@ class MockDisasterEnv:
         for d in self.drones:
             # copy to avoid mutating internal state
             snap = d.copy()
-            # small deterministic battery drain
-            snap["battery_percent"] = max(0.0, snap["battery_percent"] - self.tick * 0.05)
+            # Remove the additional battery drain here since it's already handled in step()
+            # snap["battery_percent"] = max(0.0, snap["battery_percent"] - self.tick * 0.05)
             # update environmental readings from current weather
             snap["wind_speed_ms"] = self.wind_speed + self.rng.uniform(-0.5, 0.5)
             snap["temperature_c"] = self.temperature + self.rng.uniform(-1.0, 1.0)
@@ -181,19 +184,78 @@ class MockDisasterEnv:
             abs((self.tick % 120) - 60) / 60.0
         )
 
+        # Simple victim discovery: check if drones are close to victims
+        # Only discover victims that haven't been discovered yet
+        for d in self.drones:
+            for v in self.victims:
+                if v["detected_by"] == "none":
+                    # Calculate 2D distance (ignore altitude for simplicity)
+                    dx = d["position"][0] - v["position"][0]
+                    dy = d["position"][1] - v["position"][1]
+                    distance = (dx*dx + dy*dy) ** 0.5
+                    
+                    # Discovery threshold: 15 units distance
+                    # Also consider sensor status - better sensors can detect from farther away
+                    sensor_bonus = 0
+                    if d["sensor_status"].get("thermal") == "ok":
+                        sensor_bonus = 5  # Thermal sensors help detect victims
+                    if d["sensor_status"].get("rgb") == "ok":
+                        sensor_bonus += 3  # RGB cameras help too
+                    
+                    effective_threshold = 15.0 + sensor_bonus
+                    
+                    if distance < effective_threshold:
+                        v["detected_by"] = d["drone_id"]
+                        print(f"[MockEnv] Victim {v['victim_id']} discovered by drone {d['drone_id']} (distance: {distance:.1f})")
+
         # Track missions to complete (so we can update victims after drone loop)
         missions_to_complete = []
         
-        # Drone battery naturally depletes (more if payload > 0)
+        # Base station position (where drones return to charge)
+        base_station = (0.0, 0.0, 0.0)
+        
+        # Drone operational logic
         for d in self.drones:
-            # Base battery drain
-            base_drain = 0.05 + (0.02 * d["payload_kg"])
+            current_status = d["operational_status"]
             
-            # Additional drain if on a mission (varies by mission type)
-            mission_drain = 0.0
-            if d["current_mission"] is not None:
-                # Extra battery consumption during active missions
-                # Different mission types have different energy requirements
+            # Handle different operational states
+            if current_status == "charging":
+                # Charging at base station - battery increases
+                charge_rate = 2.0  # 2% per tick when charging
+                d["battery_percent"] = min(100.0, d["battery_percent"] + charge_rate)
+                
+                # When battery reaches sufficient level, become available
+                if d["battery_percent"] >= 80.0:
+                    d["operational_status"] = "available"
+                    print(f"[MockEnv] Drone {d['drone_id']} fully charged ({d['battery_percent']:.1f}%), now available")
+            
+            elif current_status == "returning_to_base":
+                # Drone is returning to base station
+                # Move toward base station (simplified movement)
+                dx = base_station[0] - d["position"][0]
+                dy = base_station[1] - d["position"][1]
+                distance = (dx*dx + dy*dy) ** 0.5
+                
+                if distance < 5.0:  # Close enough to base
+                    d["operational_status"] = "charging"
+                    d["position"] = base_station
+                    print(f"[MockEnv] Drone {d['drone_id']} reached base station, now charging")
+                else:
+                    # Move toward base (simplified)
+                    move_speed = 5.0
+                    if distance > 0:
+                        d["position"] = (
+                            d["position"][0] + (dx / distance) * move_speed,
+                            d["position"][1] + (dy / distance) * move_speed,
+                            d["position"][2]
+                        )
+                
+                # Battery drain while returning
+                return_drain = 0.1
+                d["battery_percent"] = max(0.0, d["battery_percent"] - return_drain)
+            
+            elif current_status == "on_mission":
+                # Drone is actively on a mission
                 mission_drain = 0.15  # Base additional drain for being on mission
                 
                 # Track mission progress
@@ -218,21 +280,41 @@ class MockDisasterEnv:
                     mission = self.active_missions[mission_id]
                     elapsed = self.tick - mission["start_tick"]
                     if elapsed >= mission["duration_ticks"]:
-                        # Mission complete - free the drone
+                        # Mission complete - drone should return to base
                         d["current_mission"] = None
+                        d["operational_status"] = "returning_to_base"
                         # Record for victim update
                         missions_to_complete.append(mission_id)
-                        print(f"[MockEnv] Mission {mission_id} completed by drone {d['drone_id']}")
+                        print(f"[MockEnv] Mission {mission_id} completed by drone {d['drone_id']}, returning to base")
+                
+                # Battery drain for mission
+                mission_drain = 0.15
+                d["battery_percent"] = max(0.0, d["battery_percent"] - mission_drain)
             
-            # Apply total battery drain
-            total_drain = base_drain + mission_drain
-            d["battery_percent"] = max(0.0, d["battery_percent"] - total_drain)
+            elif current_status == "available":
+                # Available drone - check if battery is too low
+                if d["battery_percent"] < 20.0:
+                    # Battery too low, return to base
+                    d["operational_status"] = "returning_to_base"
+                    print(f"[MockEnv] Drone {d['drone_id']} battery low ({d['battery_percent']:.1f}%), returning to base")
+                else:
+                    # Normal battery drain for available drones (idle consumption)
+                    idle_drain = 0.02
+                    d["battery_percent"] = max(0.0, d["battery_percent"] - idle_drain)
             
-            # mechanical health may degrade after many ticks
+            # Base battery drain (applies to all states except charging)
+            if current_status != "charging":
+                base_drain = 0.05 + (0.02 * d["payload_kg"])
+                d["battery_percent"] = max(0.0, d["battery_percent"] - base_drain)
+            
+            # mechanical health may degrade after many ticks (independent of battery)
             if d["mechanical_health"] == "ok" and self.tick % 50 == 0:
                 d["mechanical_health"] = "degraded"
+                print(f"[MockEnv] Drone {d['drone_id']} mechanical health degraded")
             elif d["mechanical_health"] == "degraded" and self.tick % 30 == 0:
                 d["mechanical_health"] = "critical"
+                print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical")
+            
             # sensor status may fluctuate
             if self.tick % 25 == 0:
                 for sensor in d["sensor_status"]:
@@ -285,7 +367,8 @@ class MockDisasterEnv:
         for d in self.drones:
             if d["drone_id"] == drone_id:
                 d["current_mission"] = mission_id
-                print(f"[MockEnv] Drone {drone_id} assigned to mission {mission_id}")
+                d["operational_status"] = "on_mission"
+                print(f"[MockEnv] Drone {drone_id} assigned to mission {mission_id}, status: on_mission")
                 break
     
     def get_completed_missions(self) -> List[str]:

@@ -24,7 +24,8 @@ class StateAwarenessAgent:
                 "wind_speed_ms": 3.2,
                 "temperature_c": 22.0,
                 "visibility_m": 1000.0,
-                "current_mission": None
+                "current_mission": None,
+                "operational_status": "available"
             },
             ...
         ]
@@ -43,7 +44,8 @@ class StateAwarenessAgent:
                 wind_speed_ms=entry["wind_speed_ms"],
                 temperature_c=entry["temperature_c"],
                 visibility_m=entry["visibility_m"],
-                current_mission=entry.get("current_mission")
+                current_mission=entry.get("current_mission"),
+                operational_status=entry.get("operational_status", "available")
             )
             self.fleet.add_or_update_drone(drone_state)
 
