@@ -169,7 +169,7 @@ def main():
             st.subheader("Sorted by priority (highest first)")
             for idx, (victim_obj, score, label) in enumerate(prioritized[:10], 1):
                 st.write(f"{idx}. **{victim_obj.victim_id}** – {label} (score: {score:.2f}) – "
-                         f"Severity: {victim_obj.injury_severity}")
+                         f"Severity: {victim_obj.severity}")
         else:
             st.info("Could not compute triage priorities.")
     else:
