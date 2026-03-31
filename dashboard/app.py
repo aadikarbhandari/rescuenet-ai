@@ -34,9 +34,9 @@ def init_system():
     for d in drone_snapshots:
         from state.fleet_state import DroneState
         ds = DroneState(
-            drone_id=d['id'],
-            x=d['x'],
-            y=d['y'],
+            drone_id=d['drone_id'],
+            x=(d.get('x') if 'x' in d else d.get('position', (0, 0, 0))[0]),
+            y=(d.get('y') if 'y' in d else d.get('position', (0, 0, 0))[1]),
             battery=d.get('battery', 100.0),
             status=d.get('status', 'idle'),
             sensor_status=d.get('sensor_status', {}),
