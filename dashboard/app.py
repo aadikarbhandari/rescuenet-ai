@@ -57,7 +57,8 @@ def init_system():
             injury_severity=v.get('injury_severity', 'unknown'),
             detected_by=v.get('detected_by', 'none'),
             assigned_drone=v.get('assigned_drone', None),
-            mission_id=v.get('mission_id', None)
+            mission_id=v.get('mission_id', None),
+            cooldown_until_tick=v.get('cooldown_until_tick', 0)
         )
         fleet.add_or_update_victim(vs)
     
@@ -73,26 +74,61 @@ def main():
     
     env, fleet, state_agent, coordinator, triage = init_system()
     
+    # Get fresh victim snapshots for accurate triage data
+    victim_snapshots = env.get_victim_snapshots()
+    victim_data_by_id = {v['victim_id']: v for v in victim_snapshots}
+    
     # 1. Fleet readiness summary
     st.header("📊 Fleet Readiness Summary")
     readiness = state_agent.compute_fleet_readiness_summary()
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Drones", readiness.get("total_drones", 0))
     col2.metric("Available Drones", readiness.get("available_drones", 0))
-    col3.metric("Operational Drones", readiness.get("operational_drones", 0))
-    col4.metric("Readiness %", f"{readiness.get('readiness_percentage', 0):.1f}%")
+    col3.metric("Avg Battery", f"{readiness.get('avg_battery', 0):.1f}%")
+    col4.metric("Operational %", f"{readiness.get('operational_percent', 0):.1f}%")
     
     # 2. Drone table
     st.header("🛸 Drones")
     drone_rows = []
     for drone_id, drone in fleet.drones.items():
+        # Determine availability status
+        availability = state_agent.mark_availability()
+        is_available = availability.get(drone_id, False)
+        
+        # Get mission status
+        mission_status = "Available"
+        if drone.current_mission:
+            # Find the mission assignment
+            mission = next((m for m in fleet.assignments.values() if m.mission_id == drone.current_mission), None)
+            if mission:
+                mission_status = f"On mission: {mission.status}"
+            else:
+                mission_status = f"On mission: {drone.current_mission}"
+        elif not is_available:
+            # Determine why unavailable
+            reasons = []
+            if drone.battery_percent < 10.0:
+                reasons.append("Low battery")
+            if drone.mechanical_health == "critical":
+                reasons.append("Critical health")
+            if not state_agent._essential_sensors_ok(drone.sensor_status):
+                reasons.append("Sensor fault")
+            mission_status = f"Unavailable: {', '.join(reasons)}" if reasons else "Unavailable"
+        
+        # Format battery with color indication
+        battery_color = "🟢" if drone.battery_percent > 50 else "🟡" if drone.battery_percent > 20 else "🔴"
+        battery_display = f"{battery_color} {drone.battery_percent:.1f}%"
+        
+        # Format health status
+        health_icon = "🟢" if drone.mechanical_health == "ok" else "🟡" if drone.mechanical_health == "degraded" else "🔴"
+        
         drone_rows.append({
             "ID": drone.drone_id,
-            "X": drone.position[0] if drone.position and len(drone.position) > 0 else 0.0,
-            "Y": drone.position[1] if drone.position and len(drone.position) > 1 else 0.0,
-            "Battery": f"{drone.battery_percent:.1f}%",
-            "Status": drone.mechanical_health,
-            "Capabilities": ", ".join(drone.sensor_status.keys()) if drone.sensor_status else "none"
+            "Position": f"({drone.position[0]:.1f}, {drone.position[1]:.1f})" if drone.position and len(drone.position) > 1 else "(0.0, 0.0)",
+            "Battery": battery_display,
+            "Health": f"{health_icon} {drone.mechanical_health}",
+            "Mission Status": mission_status,
+            "Sensors": ", ".join([f"{k}:{v}" for k, v in drone.sensor_status.items()]) if drone.sensor_status else "none"
         })
     if drone_rows:
         st.dataframe(pd.DataFrame(drone_rows), use_container_width=True)
@@ -103,28 +139,35 @@ def main():
     st.header("🩸 Victims")
     victim_rows = []
     for victim_id, victim in fleet.victims.items():
-        # Try to compute triage priority
-        # Map VictimState fields to TriageVictim fields
-        # TriageVictim expects: victim_id, severity, conscious, bleeding, body_temperature_c, accessibility, position
-        # We need to provide defaults for missing fields
+        # Get actual victim data from environment for accurate triage
+        raw_victim = victim_data_by_id.get(victim_id, {})
+        
+        # Compute triage priority using actual data if available, otherwise defaults
         triage_obj = TriageVictim(
             victim_id=victim.victim_id,
             severity=victim.injury_severity,  # map injury_severity to severity
-            conscious=True,                    # default assumption
-            bleeding='none',                   # default assumption
-            body_temperature_c=37.0,           # default assumption
-            accessibility=0.5,                 # default assumption
+            conscious=raw_victim.get('conscious', True),  # use actual data
+            bleeding=raw_victim.get('bleeding', 'none'),  # use actual data
+            body_temperature_c=raw_victim.get('body_temperature_c', 37.0),  # use actual data
+            accessibility=raw_victim.get('accessibility', 0.5),  # use actual data
             position=victim.position
         )
         priority_score, priority_label = triage.compute_priority(triage_obj)
+        
+        # Add cooldown status if applicable
+        cooldown_status = ""
+        if victim.cooldown_until_tick > 0:
+            cooldown_status = f"Cooldown until tick {victim.cooldown_until_tick}"
+        
         victim_rows.append({
             "ID": victim.victim_id,
             "X": victim.position[0] if victim.position and len(victim.position) > 0 else 0.0,
             "Y": victim.position[1] if victim.position and len(victim.position) > 1 else 0.0,
             "Severity": victim.injury_severity,
             "Found By": victim.detected_by or "—",
+            "Assigned To": victim.assigned_drone or "—",
             "Priority Score": f"{priority_score:.2f}",
-            "Priority Label": priority_label
+            "Cooldown": cooldown_status
         })
     if victim_rows:
         st.dataframe(pd.DataFrame(victim_rows), use_container_width=True)
@@ -135,14 +178,14 @@ def main():
     st.header("📋 Active Missions")
     mission_rows = []
     for mission_id, assignment in fleet.assignments.items():
-        if not assignment.completed:
+        if assignment.status in ("pending", "active"):  # Show pending and active missions
             mission_rows.append({
                 "Mission ID": mission_id,
                 "Drone ID": assignment.drone_id,
                 "Victim ID": assignment.victim_id or "—",
                 "Task Type": assignment.task_type,
                 "Estimated Duration": f"{assignment.estimated_duration_min:.1f} min",
-                "Assigned At": assignment.assigned_at
+                "Status": assignment.status
             })
     if mission_rows:
         st.dataframe(pd.DataFrame(mission_rows), use_container_width=True)
@@ -152,24 +195,30 @@ def main():
     # 5. Triage priorities (as a separate section)
     st.header("🚨 Triage Priorities")
     if fleet.victims:
-        # Use the triage agent's prioritization method
+        # Use the triage agent's prioritization method with actual data
         triage_victims = []
         for victim in fleet.victims.values():
+            raw_victim = victim_data_by_id.get(victim.victim_id, {})
             triage_victims.append(TriageVictim(
                 victim_id=victim.victim_id,
                 severity=victim.injury_severity,  # map injury_severity to severity
-                conscious=True,                    # default assumption
-                bleeding='none',                   # default assumption
-                body_temperature_c=37.0,           # default assumption
-                accessibility=0.5,                 # default assumption
+                conscious=raw_victim.get('conscious', True),  # use actual data
+                bleeding=raw_victim.get('bleeding', 'none'),  # use actual data
+                body_temperature_c=raw_victim.get('body_temperature_c', 37.0),  # use actual data
+                accessibility=raw_victim.get('accessibility', 0.5),  # use actual data
                 position=victim.position
             ))
         prioritized = triage.prioritize_victims(triage_victims)
         if prioritized:
             st.subheader("Sorted by priority (highest first)")
             for idx, (victim_obj, score, label) in enumerate(prioritized[:10], 1):
+                # Show cooldown status if applicable
+                victim_state = fleet.victims.get(victim_obj.victim_id)
+                cooldown_info = ""
+                if victim_state and victim_state.cooldown_until_tick > 0:
+                    cooldown_info = f" ⏳ (cooldown until tick {victim_state.cooldown_until_tick})"
                 st.write(f"{idx}. **{victim_obj.victim_id}** – {label} (score: {score:.2f}) – "
-                         f"Severity: {victim_obj.severity}")
+                         f"Severity: {victim_obj.severity}{cooldown_info}")
         else:
             st.info("Could not compute triage priorities.")
     else:

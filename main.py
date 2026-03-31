@@ -35,12 +35,20 @@ def main():
     total_ticks = 5
     all_assignments = []
 
-    for tick in range(total_ticks):
+    for tick in range(1, total_ticks + 1):  # Start at 1 to match env.tick
         print(f"\n--- Tick {tick} ---")
 
         # Step the environment
         env.step()
         print(f"Environment stepped (tick={env.tick}).")
+        
+        # Check for completed missions and update FleetState
+        completed_missions = env.get_completed_missions()
+        for mission_id in completed_missions:
+            if fleet.complete_assignment(mission_id):
+                print(f"[Main] Mission {mission_id} marked as completed in FleetState")
+            else:
+                print(f"[Main] Warning: Mission {mission_id} not found in FleetState")
 
         # Get raw drone data and ingest into fleet state
         raw_drones = env.get_drone_snapshots()
@@ -57,7 +65,8 @@ def main():
                 injury_severity=v["injury_severity"],
                 detected_by=v["detected_by"],
                 assigned_drone=v["assigned_drone"],
-                mission_id=v["mission_id"]
+                mission_id=v["mission_id"],
+                cooldown_until_tick=v.get("cooldown_until_tick", 0)
             )
             victim_objs.append(vs)
             fleet.add_or_update_victim(vs)
@@ -89,9 +98,15 @@ def main():
             print(f"  {victim.victim_id}: {score:.1f} - {reason}")
 
         # Assign missions via coordinator
-        assignments = coordinator.assign_missions(victim_objs)
+        assignments = coordinator.assign_missions(victim_objs, env.tick)
         all_assignments.extend(assignments)
         print(f"Coordinator created {len(assignments)} new mission(s) this tick.")
+        
+        # Update environment with new mission assignments
+        for assignment in assignments:
+            if assignment.victim_id:
+                env.update_victim_assignment(assignment.victim_id, assignment.drone_id, assignment.mission_id)
+            env.update_drone_mission(assignment.drone_id, assignment.mission_id)
 
         # Print current assignments
         if fleet.assignments:
@@ -107,7 +122,7 @@ def main():
     print("SIMULATION COMPLETE")
     print("="*50)
     print(f"Total ticks simulated: {total_ticks}")
-    print(f"Total missions created: {len(all_assignments)}")
+    print(f"Total missions created: {len(fleet.assignments)}")
     print()
 
     # Fleet readiness final
@@ -130,9 +145,30 @@ def main():
 
     # Victim assignment summary
     assigned_victims = [v for v in fleet.victims.values() if v.assigned_drone is not None]
+    victims_in_cooldown = [v for v in fleet.victims.values() if v.cooldown_until_tick > env.tick]
+    
     print(f"Victims assigned to a drone: {len(assigned_victims)}/{len(fleet.victims)}")
     for v in assigned_victims:
         print(f"  {v.victim_id} -> drone {v.assigned_drone} (mission {v.mission_id})")
+    
+    if victims_in_cooldown:
+        print(f"\nVictims in cooldown ({len(victims_in_cooldown)}):")
+        for v in victims_in_cooldown:
+            print(f"  {v.victim_id}: cooldown until tick {v.cooldown_until_tick} (current: {env.tick})")
+    
+    # Drone status summary
+    print(f"\nDrone status:")
+    for drone_id, drone in fleet.drones.items():
+        status = "available"
+        if drone.current_mission is not None:
+            status = f"on mission {drone.current_mission}"
+        elif drone.battery_percent < 10.0:
+            status = "low battery"
+        elif drone.mechanical_health == "critical":
+            status = "critical health"
+        elif drone.sensor_status.get("rgb") != "ok" or drone.sensor_status.get("lidar") != "ok":
+            status = "sensor issues"
+        print(f"  {drone_id}: {status}, battery={drone.battery_percent:.1f}%, health={drone.mechanical_health}")
 
     print("\n=== RescueNet AI Simulation End ===")
 
