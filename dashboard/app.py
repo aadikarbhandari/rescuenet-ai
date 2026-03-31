@@ -35,12 +35,16 @@ def init_system():
         from state.fleet_state import DroneState
         ds = DroneState(
             drone_id=d['drone_id'],
-            x=(d.get('x') if 'x' in d else d.get('position', (0, 0, 0))[0]),
-            y=(d.get('y') if 'y' in d else d.get('position', (0, 0, 0))[1]),
-            battery=d.get('battery', 100.0),
-            status=d.get('status', 'idle'),
+            battery_percent=d.get('battery_percent', d.get('battery', 100.0)),
+            mechanical_health=d.get('mechanical_health', 'ok'),
             sensor_status=d.get('sensor_status', {}),
-            capabilities=d.get('capabilities', [])
+            payload_kg=d.get('payload_kg', 0.0),
+            winch_status=d.get('winch_status', 'ready'),
+            position=d.get('position', (0.0, 0.0, 0.0)),
+            wind_speed_ms=d.get('wind_speed_ms', 0.0),
+            temperature_c=d.get('temperature_c', 20.0),
+            visibility_m=d.get('visibility_m', 1000.0),
+            current_mission=d.get('current_mission', None)
         )
         fleet.add_or_update_drone(ds)
     
@@ -48,12 +52,12 @@ def init_system():
     for v in victim_snapshots:
         from state.fleet_state import VictimState
         vs = VictimState(
-            victim_id=v['id'],
-            x=v['x'],
-            y=v['y'],
+            victim_id=v['victim_id'],
+            position=v.get('position', (0.0, 0.0, 0.0)),
             injury_severity=v.get('injury_severity', 'unknown'),
-            found_by=v.get('found_by', None),
-            last_seen=v.get('last_seen', 0)
+            detected_by=v.get('detected_by', 'none'),
+            assigned_drone=v.get('assigned_drone', None),
+            mission_id=v.get('mission_id', None)
         )
         fleet.add_or_update_victim(vs)
     
@@ -102,11 +106,11 @@ def main():
         # Try to compute triage priority
         triage_obj = TriageVictim(
             victim_id=victim.victim_id,
-            x=victim.x,
-            y=victim.y,
+            position=victim.position,
             injury_severity=victim.injury_severity,
-            found_by=victim.found_by,
-            last_seen=victim.last_seen
+            detected_by=victim.detected_by,
+            assigned_drone=victim.assigned_drone,
+            mission_id=victim.mission_id
         )
         priority_score, priority_label = triage.compute_priority(triage_obj)
         victim_rows.append({
@@ -149,11 +153,11 @@ def main():
         for victim in fleet.victims.values():
             triage_victims.append(TriageVictim(
                 victim_id=victim.victim_id,
-                x=victim.x,
-                y=victim.y,
+                position=victim.position,
                 injury_severity=victim.injury_severity,
-                found_by=victim.found_by,
-                last_seen=victim.last_seen
+                detected_by=victim.detected_by,
+                assigned_drone=victim.assigned_drone,
+                mission_id=victim.mission_id
             ))
         prioritized = triage.prioritize_victims(triage_victims)
         if prioritized:
