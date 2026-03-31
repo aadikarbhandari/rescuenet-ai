@@ -88,11 +88,11 @@ def main():
     for drone_id, drone in fleet.drones.items():
         drone_rows.append({
             "ID": drone.drone_id,
-            "X": drone.x,
-            "Y": drone.y,
-            "Battery": f"{drone.battery:.1f}%",
-            "Status": drone.status,
-            "Capabilities": ", ".join(drone.capabilities) if drone.capabilities else "none"
+            "X": drone.position[0] if drone.position and len(drone.position) > 0 else 0.0,
+            "Y": drone.position[1] if drone.position and len(drone.position) > 1 else 0.0,
+            "Battery": f"{drone.battery_percent:.1f}%",
+            "Status": drone.mechanical_health,
+            "Capabilities": ", ".join(drone.sensor_status.keys()) if drone.sensor_status else "none"
         })
     if drone_rows:
         st.dataframe(pd.DataFrame(drone_rows), use_container_width=True)
@@ -115,10 +115,10 @@ def main():
         priority_score, priority_label = triage.compute_priority(triage_obj)
         victim_rows.append({
             "ID": victim.victim_id,
-            "X": victim.x,
-            "Y": victim.y,
+            "X": victim.position[0] if victim.position and len(victim.position) > 0 else 0.0,
+            "Y": victim.position[1] if victim.position and len(victim.position) > 1 else 0.0,
             "Severity": victim.injury_severity,
-            "Found By": victim.found_by or "—",
+            "Found By": victim.detected_by or "—",
             "Priority Score": f"{priority_score:.2f}",
             "Priority Label": priority_label
         })
