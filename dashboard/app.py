@@ -104,13 +104,17 @@ def main():
     victim_rows = []
     for victim_id, victim in fleet.victims.items():
         # Try to compute triage priority
+        # Map VictimState fields to TriageVictim fields
+        # TriageVictim expects: victim_id, severity, conscious, bleeding, body_temperature_c, accessibility, position
+        # We need to provide defaults for missing fields
         triage_obj = TriageVictim(
             victim_id=victim.victim_id,
-            position=victim.position,
-            injury_severity=victim.injury_severity,
-            detected_by=victim.detected_by,
-            assigned_drone=victim.assigned_drone,
-            mission_id=victim.mission_id
+            severity=victim.injury_severity,  # map injury_severity to severity
+            conscious=True,                    # default assumption
+            bleeding='none',                   # default assumption
+            body_temperature_c=37.0,           # default assumption
+            accessibility=0.5,                 # default assumption
+            position=victim.position
         )
         priority_score, priority_label = triage.compute_priority(triage_obj)
         victim_rows.append({
@@ -153,11 +157,12 @@ def main():
         for victim in fleet.victims.values():
             triage_victims.append(TriageVictim(
                 victim_id=victim.victim_id,
-                position=victim.position,
-                injury_severity=victim.injury_severity,
-                detected_by=victim.detected_by,
-                assigned_drone=victim.assigned_drone,
-                mission_id=victim.mission_id
+                severity=victim.injury_severity,  # map injury_severity to severity
+                conscious=True,                    # default assumption
+                bleeding='none',                   # default assumption
+                body_temperature_c=37.0,           # default assumption
+                accessibility=0.5,                 # default assumption
+                position=victim.position
             ))
         prioritized = triage.prioritize_victims(triage_victims)
         if prioritized:
