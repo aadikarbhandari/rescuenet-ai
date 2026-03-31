@@ -41,7 +41,7 @@ class CoordinatorAgent:
         sorted_victims = sorted(unassigned, key=victim_score)
         return sorted_victims
 
-    def assign_missions(self, victims: List[VictimState]) -> List[MissionAssignment]:
+    def assign_missions(self, victims: List[VictimState], current_tick: int = 0) -> List[MissionAssignment]:
         """
         Main assignment loop.
         Returns a list of newly created MissionAssignment objects.
@@ -50,7 +50,15 @@ class CoordinatorAgent:
         self.assigned_drones.clear()
 
         # Filter out victims already assigned (assigned_drone or mission_id not None)
-        unassigned = [v for v in victims if v.assigned_drone is None and v.mission_id is None]
+        # Also filter out victims in cooldown period after mission completion
+        unassigned = []
+        for v in victims:
+            if v.assigned_drone is None and v.mission_id is None:
+                # Check if victim is in cooldown period
+                if current_tick < v.cooldown_until_tick:
+                    print(f"[Coordinator] Victim {v.victim_id} in cooldown until tick {v.cooldown_until_tick} (current: {current_tick}) - skipping")
+                    continue
+                unassigned.append(v)
         print(f"[Coordinator] {len(unassigned)} unassigned victims out of {len(victims)} total.")
 
         # Prioritize
@@ -136,6 +144,7 @@ class CoordinatorAgent:
         """
         Find an available drone (not in self.assigned_drones) that can perform the task.
         Also exclude drones that are already busy with an active mission (from fleet.assignments).
+        Uses same scoring as get_best_drone_for for consistency.
         """
         best_score = -float('inf')
         best_id = None
@@ -160,13 +169,33 @@ class CoordinatorAgent:
             can, _ = self.fleet.can_perform_mission(drone_id, task_type, estimated_duration_min=15.0)
             if not can:
                 continue
-            # simple scoring: proximity + battery
+            
+            # Use same scoring as get_best_drone_for for consistency
+            # Proximity score (closer is better)
             dx = drone.position[0] - target_x
             dy = drone.position[1] - target_y
-            dist = (dx*dx + dy*dy) ** 0.5
-            proximity = 100.0 / (1.0 + dist)
-            score = proximity + drone.battery_percent * 0.01
-            if score > best_score:
-                best_score = score
+            distance = (dx*dx + dy*dy) ** 0.5
+            proximity_score = 100.0 / (1.0 + distance)  # max 100 when distance=0
+            
+            # Battery score (higher battery better)
+            battery_score = drone.battery_percent
+            
+            # Health bonus
+            health_bonus = 0.0
+            if drone.mechanical_health == "ok":
+                health_bonus = 20.0
+            elif drone.mechanical_health == "degraded":
+                health_bonus = 5.0
+            
+            # Payload suitability
+            payload_score = 0.0
+            if task_type in ["deliver", "extract"]:
+                # lighter payload is better for these tasks
+                payload_score = max(0.0, 10.0 - drone.payload_kg)
+            
+            total_score = proximity_score * 0.4 + battery_score * 0.3 + health_bonus + payload_score
+            
+            if total_score > best_score:
+                best_score = total_score
                 best_id = drone_id
         return best_id

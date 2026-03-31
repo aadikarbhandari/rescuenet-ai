@@ -17,6 +17,7 @@ class DroneState:
     temperature_c: float
     visibility_m: float
     current_mission: Optional[str] = None     # Current task ID or None
+    operational_status: str = "available"     # "available", "on_mission", "returning_to_base", "charging"
 
 @dataclass
 class VictimState:
@@ -26,6 +27,7 @@ class VictimState:
     detected_by: str                # drone_id that detected this victim
     assigned_drone: Optional[str] = None
     mission_id: Optional[str] = None
+    cooldown_until_tick: int = 0    # Tick until which victim is in cooldown after mission completion
 
 @dataclass
 class MissionAssignment:
@@ -48,15 +50,16 @@ class FleetState:
         self.drones[drone_state.drone_id] = drone_state
 
     def add_or_update_victim(self, victim_state: VictimState) -> None:
-        # If victim already exists, preserve assignment-related fields
+        # If victim already exists, preserve cooldown if new data doesn't have it set
+        # but use assignment state from new data (env is ground truth for victim state)
         existing = self.victims.get(victim_state.victim_id)
         if existing is not None:
-            # Keep assignment state from existing victim
-            victim_state.assigned_drone = existing.assigned_drone
-            victim_state.mission_id = existing.mission_id
-            # Update the victim entry
-        self.victims[victim_state.victim_id] = victim_state
-        """Insert or update a victim's state."""
+            # Preserve cooldown if new data has cooldown_until_tick = 0 (not set)
+            # This handles case where env doesn't provide cooldown in initial state
+            if victim_state.cooldown_until_tick == 0 and existing.cooldown_until_tick > 0:
+                victim_state.cooldown_until_tick = existing.cooldown_until_tick
+            # Assignment state comes from new data (env ground truth)
+            # Don't preserve assignment from existing - env is authoritative
         self.victims[victim_state.victim_id] = victim_state
 
     def can_perform_mission(self, drone_id: str, task_type: str, estimated_duration_min: float) -> Tuple[bool, str]:
@@ -115,10 +118,14 @@ class FleetState:
         if drone.visibility_m < 50.0:
             return False, f"Visibility too low ({drone.visibility_m} m)."
 
-        # Already on a mission?
+        # Already on a mission or not operationally available?
         if drone.current_mission is not None:
             # Allow if the mission is nearly done? For simplicity, reject.
             return False, f"Drone already assigned to mission {drone.current_mission}."
+        
+        # Check operational status
+        if drone.operational_status != "available":
+            return False, f"Drone not available (status: {drone.operational_status})."
 
         return True, ""
 
@@ -136,12 +143,12 @@ class FleetState:
         target_x, target_y, _ = location  # assume (x, y, z)
 
         for drone_id, drone in self.drones.items():
-            # Skip if already on a mission
-            if drone.current_mission is not None:
+            # Skip if already on a mission or not available
+            if drone.current_mission is not None or drone.operational_status != "available":
                 continue
 
-            # Quick eligibility
-            can, reason = self.can_perform_mission(drone_id, task_type, estimated_duration_min=10.0)
+            # Quick eligibility - use same duration as coordinator (15.0 minutes) for consistency
+            can, reason = self.can_perform_mission(drone_id, task_type, estimated_duration_min=15.0)
             if not can:
                 continue
 
@@ -197,7 +204,7 @@ class FleetState:
             victim_id=victim_id,
             task_type=task_type,
             estimated_duration_min=estimated_duration_min,
-            status="pending"
+            status="active"  # Mission is active immediately when created
         )
         self.assignments[mission_id] = assignment
         drone.current_mission = mission_id
