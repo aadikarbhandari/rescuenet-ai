@@ -99,9 +99,14 @@ class TriageAgent:
         """
         Convenience method that accepts generic victim‑state‑like objects
         (must have the required attributes) and returns sorted IDs with scores.
+        Only triages detected victims.
         """
         triage_victims = []
         for vs in victim_states:
+            # Skip undetected victims
+            if hasattr(vs, 'is_detected') and not vs.is_detected:
+                continue
+                
             # Convert generic object to TriageVictim
             # Expect attributes: victim_id, injury_severity, conscious, bleeding,
             # body_temperature_c, accessibility, position
