@@ -49,20 +49,33 @@ class CoordinatorAgent:
         assignments = []
         self.assigned_drones.clear()
 
-        # Filter out victims already assigned (assigned_drone or mission_id not None)
-        # Also filter out victims in cooldown period after mission completion
-        unassigned = []
+        # Filter victims for assignment
+        # Only assign missions to confirmed victims (high confidence detection)
+        # Also filter out victims already assigned or in cooldown period
+        assignable = []
         for v in victims:
-            if v.assigned_drone is None and v.mission_id is None:
-                # Check if victim is in cooldown period
-                if current_tick < v.cooldown_until_tick:
-                    print(f"[Coordinator] Victim {v.victim_id} in cooldown until tick {v.cooldown_until_tick} (current: {current_tick}) - skipping")
-                    continue
-                unassigned.append(v)
-        print(f"[Coordinator] {len(unassigned)} unassigned victims out of {len(victims)} total.")
+            # Skip if already assigned
+            if v.assigned_drone is not None or v.mission_id is not None:
+                continue
+            
+            # Skip if in cooldown period
+            if current_tick < v.cooldown_until_tick:
+                print(f"[Coordinator] Victim {v.victim_id} in cooldown until tick {v.cooldown_until_tick} (current: {current_tick}) - skipping")
+                continue
+            
+            # Only assign missions to confirmed victims (high confidence)
+            if not v.is_confirmed:
+                print(f"[Coordinator] Victim {v.victim_id} not confirmed (confidence: {v.detection_confidence:.2f}) - skipping")
+                continue
+            
+            assignable.append(v)
+        
+        print(f"[Coordinator] {len(assignable)} assignable victims out of {len(victims)} total "
+              f"(detected: {sum(1 for v in victims if v.is_detected)}, "
+              f"confirmed: {sum(1 for v in victims if v.is_confirmed)}).")
 
         # Prioritize
-        prioritized = self.prioritize_victims(unassigned)
+        prioritized = self.prioritize_victims(assignable)
         print(f"[Coordinator] Priority order: {[v.victim_id for v in prioritized]}")
 
         # Collect drones that are already busy with active missions (from fleet.assignments)
@@ -77,14 +90,14 @@ class CoordinatorAgent:
             print(f"[Coordinator] Victim {victim.victim_id} severity {victim.injury_severity} -> task {task_type}")
 
             # Find best available drone (not already assigned in this cycle AND not busy with active mission)
-            best_drone_id = self.fleet.get_best_drone_for(task_type, victim.position)
+            best_drone_id = self.fleet.get_best_drone_for(task_type, victim.position, victim.injury_severity)
             if best_drone_id is None:
                 print(f"[Coordinator] No suitable drone for victim {victim.victim_id}. Skipping.")
                 continue
             # Check if drone is already busy with an active mission
             if best_drone_id in busy_drones:
                 print(f"[Coordinator] Drone {best_drone_id} is already busy with an active mission. Looking for alternative...")
-                alt_drone = self._find_alternative_drone(task_type, victim.position)
+                alt_drone = self._find_alternative_drone(task_type, victim.position, victim.injury_severity)
                 if alt_drone is None:
                     print(f"[Coordinator] No alternative drone for {victim.victim_id}. Skipping.")
                     continue
@@ -92,7 +105,7 @@ class CoordinatorAgent:
             # Also ensure drone not already assigned in this planning cycle
             if best_drone_id in self.assigned_drones:
                 print(f"[Coordinator] Drone {best_drone_id} already assigned this cycle. Looking for alternative...")
-                alt_drone = self._find_alternative_drone(task_type, victim.position)
+                alt_drone = self._find_alternative_drone(task_type, victim.position, victim.injury_severity)
                 if alt_drone is None:
                     print(f"[Coordinator] No alternative drone for {victim.victim_id}. Skipping.")
                     continue
@@ -104,7 +117,7 @@ class CoordinatorAgent:
 
             # Check capability via fleet's can_perform_mission
             can, reason = self.fleet.can_perform_mission(
-                best_drone_id, task_type, estimated_duration_min=15.0
+                best_drone_id, task_type, estimated_duration_min=15.0, victim_location=victim.position
             )
             if not can:
                 print(f"[Coordinator] Drone {best_drone_id} cannot perform {task_type}: {reason}")
@@ -115,7 +128,8 @@ class CoordinatorAgent:
                 drone_id=best_drone_id,
                 victim_id=victim.victim_id,
                 task_type=task_type,
-                estimated_duration_min=15.0
+                estimated_duration_min=15.0,
+                current_tick=current_tick
             )
             if mission_id is None:
                 print(f"[Coordinator] Failed to create assignment for {victim.victim_id}.")
@@ -140,7 +154,7 @@ class CoordinatorAgent:
         }
         return mapping.get(severity, "scan")
 
-    def _find_alternative_drone(self, task_type: str, location: tuple) -> Optional[str]:
+    def _find_alternative_drone(self, task_type: str, location: tuple, victim_severity: str = "moderate") -> Optional[str]:
         """
         Find an available drone (not in self.assigned_drones) that can perform the task.
         Also exclude drones that are already busy with an active mission (from fleet.assignments).
@@ -166,34 +180,102 @@ class CoordinatorAgent:
             # Skip if drone is busy with an active mission (from fleet.assignments)
             if drone_id in busy_drones:
                 continue
-            can, _ = self.fleet.can_perform_mission(drone_id, task_type, estimated_duration_min=15.0)
+            can, _ = self.fleet.can_perform_mission(drone_id, task_type, estimated_duration_min=15.0, victim_location=location)
             if not can:
                 continue
             
             # Use same scoring as get_best_drone_for for consistency
-            # Proximity score (closer is better)
+            # Calculate distance
             dx = drone.position[0] - target_x
             dy = drone.position[1] - target_y
             distance = (dx*dx + dy*dy) ** 0.5
-            proximity_score = 100.0 / (1.0 + distance)  # max 100 when distance=0
             
-            # Battery score (higher battery better)
-            battery_score = drone.battery_percent
+            # VICTIM PRIORITY FACTOR
+            severity_weights = {"critical": 2.0, "severe": 1.5, "moderate": 1.2, "minor": 1.0}
+            priority_factor = severity_weights.get(victim_severity, 1.0)
             
-            # Health bonus
-            health_bonus = 0.0
+            # DISTANCE/TRAVEL EFFORT
+            if distance <= 100.0:
+                distance_score = 100.0 - distance
+            else:
+                distance_score = max(0.0, 100.0 - (distance - 100.0) * 0.5)
+            
+            # BATTERY SUFFICIENCY (simplified version)
+            battery_margin = drone.battery_percent - 25.0  # Simplified margin check
+            if battery_margin > 30.0:
+                battery_score = 100.0
+            elif battery_margin > 15.0:
+                battery_score = 80.0
+            elif battery_margin > 5.0:
+                battery_score = 60.0
+            elif battery_margin > 0.0:
+                battery_score = 40.0
+            else:
+                battery_score = 0.0
+            
+            # DRONE CAPABILITY/SPECIALIZATION (simplified)
+            capability_score = 0.0
+            if task_type == "extract":
+                if drone.winch_status == "ready":
+                    capability_score += 40.0
+                elif drone.winch_status == "degraded":
+                    capability_score += 20.0
+                payload_capacity = max(0.0, 5.0 - drone.payload_kg)
+                capability_score += payload_capacity * 4.0
+            elif task_type == "deliver":
+                payload_capacity = max(0.0, 5.0 - drone.payload_kg)
+                capability_score += payload_capacity * 4.0
+            elif task_type == "scan":
+                sensor_score = 0.0
+                for sensor, status in drone.sensor_status.items():
+                    if status == "ok":
+                        sensor_score += 10.0
+                    elif status == "degraded":
+                        sensor_score += 5.0
+                capability_score += sensor_score / 3.0
+            elif task_type == "assist":
+                if drone.mechanical_health == "ok":
+                    capability_score += 30.0
+                elif drone.mechanical_health == "degraded":
+                    capability_score += 10.0
+            
+            # OPERATIONAL RELIABILITY
+            reliability_score = 0.0
             if drone.mechanical_health == "ok":
-                health_bonus = 20.0
+                reliability_score = 30.0
             elif drone.mechanical_health == "degraded":
-                health_bonus = 5.0
+                reliability_score = 10.0
             
-            # Payload suitability
-            payload_score = 0.0
-            if task_type in ["deliver", "extract"]:
-                # lighter payload is better for these tasks
-                payload_score = max(0.0, 10.0 - drone.payload_kg)
+            # ENVIRONMENTAL ADAPTABILITY
+            env_score = 0.0
+            if drone.wind_speed_ms < 5.0:
+                env_score += 15.0
+            elif drone.wind_speed_ms < 10.0:
+                env_score += 10.0
+            elif drone.wind_speed_ms < 15.0:
+                env_score += 5.0
+            if drone.visibility_m > 500.0:
+                env_score += 10.0
+            elif drone.visibility_m > 100.0:
+                env_score += 5.0
             
-            total_score = proximity_score * 0.4 + battery_score * 0.3 + health_bonus + payload_score
+            # WEIGHTS (simplified version)
+            if victim_severity == "critical":
+                weights = {"distance": 0.2, "battery": 0.3, "capability": 0.3, "reliability": 0.2, "environment": 0.1}
+            else:
+                weights = {"distance": 0.4, "battery": 0.3, "capability": 0.2, "reliability": 0.1, "environment": 0.1}
+            
+            # Apply priority factor to weights
+            for key in weights:
+                weights[key] *= priority_factor
+            
+            total_score = (
+                distance_score * weights["distance"] +
+                battery_score * weights["battery"] +
+                capability_score * weights["capability"] +
+                reliability_score * weights["reliability"] +
+                env_score * weights["environment"]
+            )
             
             if total_score > best_score:
                 best_score = total_score

@@ -57,11 +57,13 @@ class StateAwarenessAgent:
         availability = {}
         for drone_id, drone in self.fleet.drones.items():
             # A drone is unavailable if:
-            # 1. Already on a mission
-            # 2. Battery too low (<10%)
-            # 3. Mechanical health critical
-            # 4. Essential sensors not ok for basic flight
+            # 1. Not in idle operational status
+            # 2. Already on a mission
+            # 3. Battery too low (<10%)
+            # 4. Mechanical health critical
+            # 5. Essential sensors not ok for basic flight
             unavailable = (
+                drone.operational_status != "idle" or
                 drone.current_mission is not None or
                 drone.battery_percent < 10.0 or
                 drone.mechanical_health == "critical" or

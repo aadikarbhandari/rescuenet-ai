@@ -1,0 +1,7 @@
+{
+    "mode": "demo",
+    "mock_seed": 42,
+    "mock_num_drones": 3,
+    "mock_num_victims": 4,
+    "log_level": "INFO"
+}
