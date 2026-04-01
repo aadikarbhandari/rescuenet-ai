@@ -307,7 +307,7 @@ def detection_to_victim_state(detection: AirSimDetection,
     detection_confidence = detection.confidence
     
     # Determine if detection is confirmed
-    is_confirmed = detection_confidence >= 0.7
+    is_confirmed = detection_confidence >= 0.6
     
     # Map injury severity
     injury_severity = detection.injury_severity or "moderate"

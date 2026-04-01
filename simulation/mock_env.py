@@ -8,11 +8,28 @@ from typing import Dict, List, Tuple, Any
 from .environment import Environment
 
 class MockDisasterEnv(Environment):
-    def __init__(self, seed: int = 42):
+    # Mode configurations
+    MODES = {
+        "rescue": {
+            "description": "Civilian rescue mode - victims need immediate assistance",
+            "target_type": "victim",
+            "max_targets": 4,
+            "spawn_probability": 0.3,
+        },
+        "patrol": {
+            "description": "Infrastructure patrol mode - checkpoints to inspect",
+            "target_type": "checkpoint",
+            "max_targets": 3,
+            "spawn_probability": 0.2,
+        }
+    }
+
+    def __init__(self, seed: int = 42, initial_mode: str = "rescue"):
         self.rng = random.Random(seed)
         self._tick = 0
+        self._current_mode = initial_mode if initial_mode in self.MODES else "rescue"
         self._init_drones()
-        self._init_victims()
+        self._init_targets()  # Initializes victims or checkpoints based on mode
         self._init_weather()
         # Track active missions: mission_id -> {"start_tick": int, "duration_ticks": int, "drone_id": str, "victim_id": str}
         self.active_missions = {}
@@ -71,11 +88,19 @@ class MockDisasterEnv(Environment):
             }
         ]
 
+    def _init_targets(self):
+        """Initialize targets (victims or checkpoints) based on current mode."""
+        if self._current_mode == "rescue":
+            self._init_victims()
+        elif self._current_mode == "patrol":
+            self._init_checkpoints()
+
     def _init_victims(self):
         """Create 2‑4 victims with deterministic initial conditions."""
         self.victims = [
             {
                 "victim_id": "victim_1",
+                "is_confirmed": False,
                 "position": (15.0, 25.0, 0.0),
                 "injury_severity": "critical",
                 "detected_by": "none",
@@ -91,6 +116,7 @@ class MockDisasterEnv(Environment):
             },
             {
                 "victim_id": "victim_2",
+                "is_confirmed": False,
                 "position": (35.0, 45.0, 0.0),
                 "injury_severity": "moderate",
                 "detected_by": "none",
@@ -106,6 +132,7 @@ class MockDisasterEnv(Environment):
             },
             {
                 "victim_id": "victim_3",
+                "is_confirmed": False,
                 "position": (55.0, 15.0, 0.0),
                 "injury_severity": "severe",
                 "detected_by": "none",
@@ -121,6 +148,7 @@ class MockDisasterEnv(Environment):
             },
             {
                 "victim_id": "victim_4",
+                "is_confirmed": False,
                 "position": (25.0, 5.0, 0.0),
                 "injury_severity": "minor",
                 "detected_by": "none",
@@ -135,12 +163,105 @@ class MockDisasterEnv(Environment):
                 "accessibility": 0.9
             }
         ]
+        # Alias for consistent access
+        self.targets = self.victims
+
+    def _init_checkpoints(self):
+        """Create infrastructure checkpoints for patrol mode."""
+        self.checkpoints = [
+            {
+                "checkpoint_id": "checkpoint_1",
+                "position": (15.0, 25.0, 0.0),
+                "status": "uninspected",
+                "detected_by": "none",
+                "first_detected_tick": 0,
+                "detection_confidence": 0.0,
+                "assigned_drone": None,
+                "mission_id": None,
+                "cooldown_until_tick": 0,
+                "damage_level": "none",
+                "accessibility": 0.9,
+                "inspection_type": "visual",
+                "priority": "high"
+            },
+            {
+                "checkpoint_id": "checkpoint_2",
+                "position": (35.0, 45.0, 0.0),
+                "status": "uninspected",
+                "detected_by": "none",
+                "first_detected_tick": 0,
+                "detection_confidence": 0.0,
+                "assigned_drone": None,
+                "mission_id": None,
+                "cooldown_until_tick": 0,
+                "damage_level": "minor",
+                "accessibility": 0.8,
+                "inspection_type": "thermal",
+                "priority": "medium"
+            },
+            {
+                "checkpoint_id": "checkpoint_3",
+                "position": (55.0, 15.0, 0.0),
+                "status": "uninspected",
+                "detected_by": "none",
+                "first_detected_tick": 0,
+                "detection_confidence": 0.0,
+                "assigned_drone": None,
+                "mission_id": None,
+                "cooldown_until_tick": 0,
+                "damage_level": "moderate",
+                "accessibility": 0.6,
+                "inspection_type": "lidar",
+                "priority": "high"
+            }
+        ]
+        # Alias for consistent access
+        self.targets = self.checkpoints
 
     def _init_weather(self):
         """Initialize weather parameters."""
         self.visibility = 1000.0
         self.wind_speed = 3.0
         self.temperature = 22.0
+
+    def get_current_mode(self) -> str:
+        """Return the current operational mode."""
+        return self._current_mode
+
+    def switch_mode(self, mode: str):
+        """
+        Switch the environment to a different operational mode.
+        
+        Args:
+            mode: The mode to switch to ('rescue' or 'patrol')
+        
+        Raises:
+            ValueError: If the mode is not recognized
+        """
+        if mode not in self.MODES:
+            raise ValueError(f"Unknown mode: {mode}. Available modes: {list(self.MODES.keys())}")
+        
+        if mode == self._current_mode:
+            return  # Already in this mode
+        
+        old_mode = self._current_mode
+        self._current_mode = mode
+        
+        # Clear any active missions when switching modes
+        self.active_missions.clear()
+        self.recently_completed_missions.clear()
+        
+        # Reset drone missions
+        for d in self.drones:
+            d["current_mission"] = None
+            if d["operational_status"] not in ["charging", "unavailable_fault", "idle"]:
+                d["operational_status"] = "idle"
+        
+        # Reinitialize targets based on new mode
+        self._init_targets()
+        
+        print(f"[MockEnv] Switched mode from '{old_mode}' to '{mode}'")
+        print(f"[MockEnv] Mode description: {self.MODES[mode]['description']}")
 
     def get_drone_snapshots(self) -> List[Dict[str, Any]]:
         """Return current drone states as a list of dicts."""
@@ -159,25 +280,41 @@ class MockDisasterEnv(Environment):
         return snapshots
 
     def get_victim_snapshots(self) -> List[Dict[str, Any]]:
-        """Return current victim states as a list of dicts."""
+        """Return current target states as a list of dicts (victims or checkpoints based on mode)."""
         snapshots = []
-        for v in self.victims:
-            snap = v.copy()
-            # deterministic condition changes over ticks
-            # body temperature drifts slightly
-            drift = self.rng.uniform(-0.1, 0.1)
-            snap["body_temperature_c"] += drift
-            # accessibility may improve if not already 1.0
-            if snap["accessibility"] < 1.0:
-                snap["accessibility"] += self.rng.uniform(0.0, 0.02)
-            # bleeding may worsen for severe cases
-            if snap["bleeding"] == "severe" and self._tick % 10 == 0:
-                snap["bleeding"] = "severe"  # stays severe
-            elif snap["bleeding"] == "moderate" and self._tick % 15 == 0:
-                snap["bleeding"] = "severe"
-            # consciousness may change for critical victims
-            if snap["injury_severity"] == "critical" and self._tick % 20 == 0:
-                snap["conscious"] = False
+        for target in self.targets:
+            snap = target.copy()
+            
+            if self._current_mode == "rescue":
+                # Victim-specific updates
+                # deterministic condition changes over ticks
+                # body temperature drifts slightly
+                drift = self.rng.uniform(-0.1, 0.1)
+                snap["body_temperature_c"] += drift
+                # accessibility may improve if not already 1.0
+                if snap["accessibility"] < 1.0:
+                    snap["accessibility"] += self.rng.uniform(0.0, 0.02)
+                # bleeding may worsen for severe cases
+                if snap["bleeding"] == "severe" and self._tick % 10 == 0:
+                    snap["bleeding"] = "severe"  # stays severe
+                elif snap["bleeding"] == "moderate" and self._tick % 15 == 0:
+                    snap["bleeding"] = "severe"
+                # consciousness may change for critical victims
+                if snap["injury_severity"] == "critical" and self._tick % 20 == 0:
+                    snap["conscious"] = False
+            elif self._current_mode == "patrol":
+                # Checkpoint-specific updates
+                # Damage level may worsen over time
+                if snap["damage_level"] == "none" and self._tick % 50 == 0:
+                    snap["damage_level"] = "minor"
+                elif snap["damage_level"] == "minor" and self._tick % 40 == 0:
+                    snap["damage_level"] = "moderate"
+                elif snap["damage_level"] == "moderate" and self._tick % 30 == 0:
+                    snap["damage_level"] = "severe"
+                # Accessibility may change
+                if snap["accessibility"] < 1.0:
+                    snap["accessibility"] += self.rng.uniform(0.0, 0.01)
+            
             snapshots.append(snap)
         return snapshots
 
@@ -200,16 +337,19 @@ class MockDisasterEnv(Environment):
             abs((self._tick % 120) - 60) / 60.0
         )
 
-        # Realistic victim discovery: drones must be close and have appropriate sensors
+        # Realistic target discovery: drones must be close and have appropriate sensors
         # Simulates sensor-based detection with confidence levels
         for d in self.drones:
-            for v in self.victims:
+            for target in self.targets:
                 # Calculate 2D distance (ignore altitude for simplicity)
-                dx = d["position"][0] - v["position"][0]
-                dy = d["position"][1] - v["position"][1]
+                dx = d["position"][0] - target["position"][0]
+                dy = d["position"][1] - target["position"][1]
                 distance = (dx*dx + dy*dy) ** 0.5
                 
-                if v["detected_by"] == "none":
+                target_id = target.get("victim_id") or target.get("checkpoint_id")
+                detected_by_key = "detected_by"
+                
+                if target[detected_by_key] == "none":
                     # Base detection probability based on distance
                     base_prob = max(0.0, 1.0 - (distance / 30.0))  # 100% at 0m, 0% at 30m+
                     
@@ -228,20 +368,27 @@ class MockDisasterEnv(Environment):
                     
                     # Random chance based on probability
                     if self.rng.random() < detection_prob:
-                        v["detected_by"] = d["drone_id"]
-                        v["first_detected_tick"] = self._tick
+                        target[detected_by_key] = d["drone_id"]
+                        target["first_detected_tick"] = self._tick
                         # Initial confidence based on sensors and distance
-                        v["detection_confidence"] = min(1.0, 0.3 + sensor_bonus * 0.5 + (1.0 - distance/30.0) * 0.3)
-                        print(f"[MockEnv] Victim {v['victim_id']} discovered by drone {d['drone_id']} "
-                              f"(distance: {distance:.1f}m, confidence: {v['detection_confidence']:.2f})")
+                        target["detection_confidence"] = min(1.0, 0.3 + sensor_bonus * 0.5 + (1.0 - distance/30.0) * 0.3)
+                        target["is_confirmed"] = target["detection_confidence"] >= 0.65
+                        
+                        if self._current_mode == "rescue":
+                            print(f"[MockEnv] Victim {target_id} discovered by drone {d['drone_id']} "
+                                  f"(distance: {distance:.1f}m, confidence: {target['detection_confidence']:.2f})")
+                        else:
+                            print(f"[MockEnv] Checkpoint {target_id} discovered by drone {d['drone_id']} "
+                                  f"(distance: {distance:.1f}m, confidence: {target['detection_confidence']:.2f})")
                 
-                # Increase confidence for already detected victims if drone is closer
-                elif v["detected_by"] == d["drone_id"] and distance < 10.0:
+                # Increase confidence for already detected targets if drone is closer
+                elif target[detected_by_key] == d["drone_id"] and distance < 10.0:
                     # Re-observation increases confidence
                     confidence_boost = min(0.2, (10.0 - distance) / 50.0)
-                    v["detection_confidence"] = min(1.0, v["detection_confidence"] + confidence_boost)
+                    target["detection_confidence"] = min(1.0, target["detection_confidence"] + confidence_boost)
+                    target["is_confirmed"] = target["detection_confidence"] >= 0.65
 
-        # Track missions to complete (so we can update victims after drone loop)
+        # Track missions to complete (so we can update targets after drone loop)
         missions_to_complete = []
         
         # Base station position (where drones return to charge)
@@ -288,13 +435,13 @@ class MockDisasterEnv(Environment):
                 current_status = "en_route"  # Update for rest of logic
             
             elif current_status == "en_route":
-                # Drone is traveling to victim location
-                # Find victim position for this mission
+                # Drone is traveling to target location
+                # Find target position for this mission
                 target_pos = None
                 mission_id = d["current_mission"]
-                for v in self.victims:
-                    if v["mission_id"] == mission_id:
-                        target_pos = v["position"]
+                for target in self.targets:
+                    if target["mission_id"] == mission_id:
+                        target_pos = target["position"]
                         break
                 
                 if target_pos:
@@ -303,10 +450,10 @@ class MockDisasterEnv(Environment):
                     dy = target_pos[1] - d["position"][1]
                     distance = (dx*dx + dy*dy) ** 0.5
                     
-                    if distance < 2.0:  # Close enough to victim
+                    if distance < 2.0:  # Close enough to target
                         d["operational_status"] = "on_scene"
                         d["position"] = target_pos  # Snap to exact position
-                        print(f"[MockEnv] Drone {d['drone_id']} reached victim, now on scene")
+                        print(f"[MockEnv] Drone {d['drone_id']} reached target, now on scene")
                     else:
                         # Move toward target
                         move_speed = 5.0
@@ -322,23 +469,23 @@ class MockDisasterEnv(Environment):
                 d["battery_percent"] = max(0.0, d["battery_percent"] - en_route_drain)
             
             elif current_status == "on_scene":
-                # Drone is at victim location, performing task
+                # Drone is at target location, performing task
                 mission_id = d["current_mission"]
                 
                 # Track mission progress
                 if mission_id not in self.active_missions:
                     # Start tracking this mission
-                    victim_id = None
-                    for v in self.victims:
-                        if v["mission_id"] == mission_id:
-                            victim_id = v["victim_id"]
+                    target_id = None
+                    for target in self.targets:
+                        if target["mission_id"] == mission_id:
+                            target_id = target.get("victim_id") or target.get("checkpoint_id")
                             break
                     
                     self.active_missions[mission_id] = {
                         "start_tick": self._tick,
                         "duration_ticks": 3,  # Missions complete after 3 ticks
                         "drone_id": d["drone_id"],
-                        "victim_id": victim_id
+                        "target_id": target_id
                     }
                 else:
                     # Check if mission is complete
@@ -348,7 +495,7 @@ class MockDisasterEnv(Environment):
                         # Mission complete - drone should return to base
                         d["current_mission"] = None
                         d["operational_status"] = "returning_to_base"
-                        # Record for victim update
+                        # Record for target update
                         missions_to_complete.append(mission_id)
                         print(f"[MockEnv] Mission {mission_id} completed by drone {d['drone_id']}, returning to base")
                 
@@ -392,10 +539,13 @@ class MockDisasterEnv(Environment):
                     print(f"[MockEnv] Drone {d['drone_id']} fully charged ({d['battery_percent']:.1f}%), now idle")
             
             elif current_status == "unavailable_fault":
-                # Drone has hardware/system fault and cannot operate
-                # No movement or battery drain (powered off or in maintenance)
-                # Position stays where it was when fault occurred
-                pass
+                # Recover after 3 ticks
+                if "fault_since" not in d:
+                    d["fault_since"] = self._tick
+                elif self._tick - d["fault_since"] >= 3:
+                    d["operational_status"] = "idle"
+                    d["fault_since"] = None
+                    print(f"[MockEnv] Drone {d['drone_id']} recovered from fault, now idle")
             
             # Base battery drain (applies to all operational states except charging and unavailable_fault)
             if current_status not in ["charging", "unavailable_fault"]:
@@ -435,43 +585,59 @@ class MockDisasterEnv(Environment):
                 if d["current_mission"]:
                     missions_to_complete.append(d["current_mission"])
         
-        # Update victims for completed missions
+        # Update targets for completed missions
         for mission_id in missions_to_complete:
             mission = self.active_missions.get(mission_id)
-            if mission and mission["victim_id"]:
-                # Find and update the victim
-                for v in self.victims:
-                    if v["victim_id"] == mission["victim_id"]:
-                        v["assigned_drone"] = None
-                        v["mission_id"] = None
+            if mission and mission.get("target_id"):
+                # Find and update the target
+                for target in self.targets:
+                    target_id = target.get("victim_id") or target.get("checkpoint_id")
+                    if target_id == mission["target_id"]:
+                        target["assigned_drone"] = None
+                        target["mission_id"] = None
                         # Set cooldown to prevent immediate reassignment (2 ticks cooldown)
-                        v["cooldown_until_tick"] = self._tick + 2
-                        print(f"[MockEnv] Victim {v['victim_id']} freed from completed mission {mission_id}, cooldown until tick {v['cooldown_until_tick']}")
+                        target["cooldown_until_tick"] = self._tick + 2
+                        
+                        if self._current_mode == "rescue":
+                            print(f"[MockEnv] Victim {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
+                        else:
+                            print(f"[MockEnv] Checkpoint {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
             # Remove from active missions tracking and add to recently completed
             if mission_id in self.active_missions:
                 del self.active_missions[mission_id]
                 self.recently_completed_missions.append(mission_id)
 
-        # Victim condition updates
-        for v in self.victims:
-            # injury severity may worsen for critical/severe
-            if v["injury_severity"] in ("critical", "severe") and self._tick % 40 == 0:
-                if v["injury_severity"] == "severe":
-                    v["injury_severity"] = "critical"
-            # body temperature drifts toward normal slowly
-            diff = 37.0 - v["body_temperature_c"]
-            v["body_temperature_c"] += diff * 0.01
-            # accessibility slowly improves
-            if v["accessibility"] < 1.0:
-                v["accessibility"] = min(1.0, v["accessibility"] + 0.005)
+        # Target condition updates
+        for target in self.targets:
+            if self._current_mode == "rescue":
+                # Victim condition updates
+                # injury severity may worsen for critical/severe
+                if target["injury_severity"] in ("critical", "severe") and self._tick % 40 == 0:
+                    if target["injury_severity"] == "severe":
+                        target["injury_severity"] = "critical"
+                # body temperature drifts toward normal slowly
+                diff = 37.0 - target["body_temperature_c"]
+                target["body_temperature_c"] += diff * 0.01
+                # accessibility slowly improves
+                if target["accessibility"] < 1.0:
+                    target["accessibility"] = min(1.0, target["accessibility"] + 0.005)
+            elif self._current_mode == "patrol":
+                # Checkpoint condition updates
+                # Status may change to inspected after some time if not already
+                if target["status"] == "uninspected" and self._tick % 30 == 0:
+                    target["status"] = "inspected"
+                # Accessibility may improve
+                if target["accessibility"] < 1.0:
+                    target["accessibility"] = min(1.0, target["accessibility"] + 0.003)
 
     def update_victim_assignment(self, victim_id: str, drone_id: str, mission_id: str):
         """Update victim assignment in the environment."""
-        for v in self.victims:
-            if v["victim_id"] == victim_id:
-                v["assigned_drone"] = drone_id
-                v["mission_id"] = mission_id
-                print(f"[MockEnv] Victim {victim_id} assigned to drone {drone_id} (mission {mission_id})")
+        for target in self.targets:
+            target_id = target.get("victim_id") or target.get("checkpoint_id")
+            if target_id == victim_id:
+                target["assigned_drone"] = drone_id
+                target["mission_id"] = mission_id
+                print(f"[MockEnv] Target {target_id} assigned to drone {drone_id} (mission {mission_id})")
                 break
     
     def update_drone_mission(self, drone_id: str, mission_id: str):
@@ -493,11 +659,12 @@ class MockDisasterEnv(Environment):
         """Return a summary of the current simulation state."""
         return {
             "tick": self._tick,
+            "mode": self._current_mode,
             "weather": {
                 "visibility_m": self.visibility,
                 "wind_speed_ms": self.wind_speed,
                 "temperature_c": self.temperature,
             },
             "num_drones": len(self.drones),
-            "num_victims": len(self.victims),
+            "num_targets": len(self.targets),
         }

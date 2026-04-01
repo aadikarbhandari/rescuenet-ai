@@ -4,6 +4,7 @@ Streamlit dashboard for RescueNet MVP.
 import sys
 import os
 import time
+import json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
@@ -120,6 +121,19 @@ def create_new_assignments():
                 env.update_victim_assignment(assignment.victim_id, assignment.drone_id, assignment.mission_id)
             env.update_drone_mission(assignment.drone_id, assignment.mission_id)
             print(f"[Dashboard] Created new assignment: {assignment.mission_id}")
+
+def load_ai_decisions() -> Dict[str, Any]:
+    """Load AI decisions from JSON file."""
+    decisions_file = "/tmp/rescuenet_decisions.json"
+    
+    if os.path.exists(decisions_file):
+        try:
+            with open(decisions_file, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"[Dashboard] Error loading AI decisions: {e}")
+            return {}
+    return {}
 
 def main():
     st.set_page_config(page_title="RescueNet MVP Dashboard", layout="wide")
@@ -731,41 +745,135 @@ def main():
     else:
         st.info("No victims to triage.")
     
-    # 6. System status footer
-    st.divider()
+    # 6. AI Decisions Panel
+    st.header("🤖 AI Decisions Panel")
     
-    # Current system status
-    current_time = time.strftime('%H:%M:%S', time.localtime(time.time()))
-    time_since_update = time.time() - st.session_state.last_update_time
+    # Load AI decisions from JSON file
+    ai_decisions = load_ai_decisions()
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.write(f"**Last Update:** {time.strftime('%H:%M:%S', time.localtime(st.session_state.last_update_time))}")
-        st.write(f"**Elapsed:** {time_since_update:.1f}s")
-    with col2:
-        st.write(f"**Current Tick:** {env.tick}")
-        st.write(f"**Runtime Mode:** {runtime_mode}")
-    with col3:
-        if st.session_state.auto_refresh:
-            st.write("**Refresh:** 🔄 Auto")
-            st.write(f"**Interval:** {st.session_state.refresh_interval}s")
+    if ai_decisions:
+        # Current mode display
+        current_mode = ai_decisions.get("current_mode", "rescue")
+        if current_mode == "rescue":
+            mode_icon = "🚨"
+            mode_color = "🔴"
+        elif current_mode == "patrol":
+            mode_icon = "🔍"
+            mode_color = "🔵"
         else:
-            st.write("**Refresh:** ⏸️ Manual")
-            st.write("**Click 'Step' to advance**")
-    
-    # Quick status summary
-    readiness = state_agent.compute_fleet_readiness_summary()
-    available_pct = readiness.get('operational_percent', 0)
-    
-    if available_pct > 50:
-        system_status = "🟢 Operational"
-    elif available_pct > 20:
-        system_status = "🟡 Degraded"
+            mode_icon = "⚙️"
+            mode_color = "⚪"
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader(f"{mode_icon} Current Mode")
+            st.write(f"**{mode_color} Mode:** {current_mode.upper()}")
+        
+        with col2:
+            last_update = ai_decisions.get("last_update", "Unknown")
+            st.subheader("🕐 Last Update")
+            st.write(f"**Time:** {last_update}")
+        
+        # Last triage decisions with LLM reasoning
+        st.subheader("📊 Last Triage Decisions")
+        triage_decisions = ai_decisions.get("triage_decisions", [])
+        
+        if triage_decisions:
+            for idx, decision in enumerate(triage_decisions[:5], 1):
+                victim_id = decision.get("victim_id", "Unknown")
+                priority = decision.get("priority", "Unknown")
+                reasoning = decision.get("llm_reasoning", "No reasoning available")
+                timestamp = decision.get("timestamp", "Unknown")
+                
+                # Color code priority
+                if priority in ["immediate", "critical"]:
+                    priority_icon = "🔴"
+                elif priority in ["high", "severe"]:
+                    priority_icon = "🟠"
+                elif priority in ["medium", "moderate"]:
+                    priority_icon = "🟡"
+                else:
+                    priority_icon = "🟢"
+                
+                with st.expander(f"{priority_icon} {idx}. Victim: {victim_id} | Priority: {priority}"):
+                    st.write(f"**Timestamp:** {timestamp}")
+                    st.write(f"**LLM Reasoning:** {reasoning}")
+        else:
+            st.info("No triage decisions recorded yet.")
+        
+        # Active security alerts
+        st.subheader("🔔 Active Security Alerts")
+        security_alerts = ai_decisions.get("security_alerts", [])
+        
+        if security_alerts:
+            for alert in security_alerts:
+                alert_type = alert.get("type", "unknown")
+                severity = alert.get("severity", "info")
+                message = alert.get("message", "")
+                drone_id = alert.get("drone_id", "N/A")
+                timestamp = alert.get("timestamp", "Unknown")
+                
+                # Color code severity
+                if severity == "critical":
+                    alert_icon = "🔴"
+                elif severity == "warning":
+                    alert_icon = "🟡"
+                elif severity == "info":
+                    alert_icon = "🔵"
+                else:
+                    alert_icon = "⚪"
+                
+                st.write(f"{alert_icon} **{alert_type.upper()}** - {message}")
+                st.write(f"   Drone: {drone_id} | Time: {timestamp}")
+                st.write("---")
+        else:
+            st.success("✅ No active security alerts.")
+        
+        # Drone assignments from coordinator
+        st.subheader("🎯 Drone Assignments (Coordinator)")
+        coordinator_assignments = ai_decisions.get("coordinator_assignments", [])
+        
+        if coordinator_assignments:
+            assignment_rows = []
+            for assignment in coordinator_assignments:
+                drone_id = assignment.get("drone_id", "Unknown")
+                victim_id = assignment.get("victim_id", "Unassigned")
+                mission_type = assignment.get("mission_type", "Unknown")
+                status = assignment.get("status", "pending")
+                reasoning = assignment.get("coordinator_reasoning", "No reasoning available")
+                timestamp = assignment.get("timestamp", "Unknown")
+                
+                # Color code status
+                if status == "assigned":
+                    status_icon = "🟢"
+                elif status == "pending":
+                    status_icon = "🟡"
+                elif status == "failed":
+                    status_icon = "🔴"
+                else:
+                    status_icon = "⚪"
+                
+                assignment_rows.append({
+                    "Drone": drone_id,
+                    "Victim": victim_id,
+                    "Mission Type": mission_type,
+                    "Status": f"{status_icon} {status}",
+                    "Timestamp": timestamp,
+                    "Reasoning": reasoning
+                })
+            
+            if assignment_rows:
+                df_assignments = pd.DataFrame(assignment_rows)
+                st.dataframe(df_assignments, use_container_width=True, hide_index=True)
+        else:
+            st.info("No coordinator assignments recorded yet.")
+        
+        # Additional AI insights
+        if "ai_insights" in ai_decisions:
+            st.subheader("💡 AI Insights")
+            insights = ai_decisions["ai_insights"]
+            for insight in insights:
+                st.write(f"- {insight}")
     else:
-        system_status = "🔴 Critical"
-    
-    st.write(f"**System Status:** {system_status} | **Fleet Readiness:** {available_pct:.1f}%")
-    st.caption(f"RescueNet AI Dashboard • {current_time} • Demo Mode: Mock Environment")
-    
-if __name__ == "__main__":
-    main()
+        # Placeholder when no data available
+        st.write("The AI decisions will appear here once the simulation runs.")

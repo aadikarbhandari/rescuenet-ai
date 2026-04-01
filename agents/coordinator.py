@@ -1,13 +1,33 @@
 """
 Supervisor agent - oversees full graph
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+import json
+import logging
+
+# Try to import LLM libraries, but make them optional
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
 from state.fleet_state import FleetState, VictimState, MissionAssignment
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class CoordinatorAgent:
-    def __init__(self, fleet_state: FleetState):
+    def __init__(self, fleet_state: FleetState, use_llm_replanning: bool = False, llm_api_key: str = None):
         self.fleet = fleet_state
         self.assigned_drones = set()  # drone IDs already assigned in this planning cycle
+        self.use_llm_replanning = use_llm_replanning
+        if use_llm_replanning and not OPENAI_AVAILABLE:
+            logger.warning("LLM replanning requested but openai not available, falling back to default logic")
+            self.use_llm_replanning = False
+        if use_llm_replanning and llm_api_key:
+            openai.api_key = llm_api_key
 
     def prioritize_victims(self, victims: List[VictimState]) -> List[VictimState]:
         """
@@ -41,6 +61,160 @@ class CoordinatorAgent:
         sorted_victims = sorted(unassigned, key=victim_score)
         return sorted_victims
 
+    def replan_missions(self, fleet_state: dict, victims: list) -> list:
+        """
+        Use LLM to decide which drone should go to which victim.
+        Returns list of assignments [{drone_id, victim_id, priority}].
+        Falls back to existing logic if LLM fails.
+        """
+        if not self.use_llm_replanning:
+            return self._fallback_replan(fleet_state, victims)
+        
+        try:
+            # Format fleet state and victims for LLM
+            prompt = self._build_replan_prompt(fleet_state, victims)
+            
+            # Call LLM
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a rescue coordination AI. Assign drones to victims based on severity, distance, and drone capabilities. Respond only with valid JSON array."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3
+            )
+            
+            # Parse response
+            assignments = self._parse_llm_response(response.choices[0].message.content)
+            logger.info(f"[Coordinator] LLM replanning returned {len(assignments)} assignments")
+            return assignments
+            
+        except Exception as e:
+            logger.error(f"LLM replanning failed: {e}, falling back to default logic")
+            return self._fallback_replan(fleet_state, victims)
+    
+    def _build_replan_prompt(self, fleet_state: dict, victims: list) -> str:
+        """Build a detailed prompt for the LLM with current state information."""
+        # Format drone information
+        drones_info = []
+        for drone_id, drone in fleet_state.get('drones', {}).items():
+            drones_info.append({
+                'id': drone_id,
+                'position': list(drone.position) if hasattr(drone, 'position') else list(drone.get('position', [0, 0, 0])),
+                'battery_percent': drone.battery_percent if hasattr(drone, 'battery_percent') else drone.get('battery_percent', 0),
+                'status': 'busy' if drone.current_mission is not None else 'available',
+                'winch_status': getattr(drone, 'winch_status', 'unknown'),
+                'payload_kg': getattr(drone, 'payload_kg', 0),
+                'sensor_status': getattr(drone, 'sensor_status', {}),
+                'mechanical_health': getattr(drone, 'mechanical_health', 'unknown'),
+                'wind_speed_ms': getattr(drone, 'wind_speed_ms', 0),
+                'visibility_m': getattr(drone, 'visibility_m', 1000)
+            })
+        
+        # Format victim information
+        victims_info = []
+        for victim in victims:
+            victims_info.append({
+                'id': victim.victim_id if hasattr(victim, 'victim_id') else victim.get('victim_id'),
+                'position': list(victim.position) if hasattr(victim, 'position') else list(victim.get('position', [0, 0, 0])),
+                'severity': victim.injury_severity if hasattr(victim, 'injury_severity') else victim.get('injury_severity', 'moderate'),
+                'is_confirmed': victim.is_confirmed if hasattr(victim, 'is_confirmed') else victim.get('is_confirmed', False)
+            })
+        
+        prompt = f"""Current fleet state (drones):
+{json.dumps(drones_info, indent=2)}
+
+Victims to assign:
+{json.dumps(victims_info, indent=2)}
+
+Based on the above information, assign each victim to the most appropriate available drone.
+Consider:
+1. Victim severity (critical > severe > moderate > minor)
+2. Drone proximity to victim
+3. Drone battery level (higher is better)
+4. Drone capabilities matching victim needs (winch for extract, payload for deliver, sensors for scan, mechanical health for assist)
+5. Environmental conditions (wind speed, visibility)
+
+Return ONLY a JSON array of assignments with this exact format:
+[{{"drone_id": "drone_1", "victim_id": "victim_1", "priority": 1}}, ...]
+
+Rules:
+- Only assign drones that are available (status: 'available')
+- Do not assign the same drone to multiple victims
+- Prioritize critical and severe victims
+- Consider drone capabilities: extract needs winch, deliver needs payload capacity, scan needs sensors, assist needs mechanical health
+"""
+        return prompt
+    
+    def _parse_llm_response(self, response: str) -> list:
+        """Parse the LLM response into assignments list."""
+        try:
+            # Extract JSON from response
+            start = response.find('[')
+            end = response.rfind(']') + 1
+            if start == -1 or end == 0:
+                raise ValueError("No JSON array found in response")
+            
+            json_str = response[start:end]
+            assignments = json.loads(json_str)
+            
+            # Validate assignments
+            valid_assignments = []
+            for assignment in assignments:
+                if all(k in assignment for k in ['drone_id', 'victim_id', 'priority']):
+                    valid_assignments.append(assignment)
+            
+            return valid_assignments
+            
+        except Exception as e:
+            logger.error(f"Failed to parse LLM response: {e}")
+            raise
+    
+    def _fallback_replan(self, fleet_state: dict, victims: list) -> list:
+        """
+        Fallback to existing heuristic-based assignment logic.
+        Returns list of assignments in the same format as LLM would produce.
+        """
+        # Convert dict victims back to VictimState objects if needed
+        victim_states = []
+        for v in victims:
+            if isinstance(v, dict):
+                # Create a simple object with required attributes
+                class DictVictim:
+                    def __init__(self, d):
+                        self.victim_id = d.get('victim_id')
+                        self.position = tuple(d.get('position', [0, 0, 0]))
+                        self.injury_severity = d.get('injury_severity', 'moderate')
+                        self.is_confirmed = d.get('is_confirmed', False)
+                        self.assigned_drone = None
+                        self.mission_id = None
+                        self.detection_confidence = d.get('detection_confidence', 1.0)
+                        self.cooldown_until_tick = d.get('cooldown_until_tick', 0)
+                        self.is_detected = d.get('is_detected', True)
+                victim_states.append(DictVictim(v))
+            else:
+                victim_states.append(v)
+        
+        # Use existing prioritization logic
+        prioritized = self.prioritize_victims(victim_states)
+        
+        # Build assignments list similar to LLM format
+        assignments = []
+        for idx, victim in enumerate(prioritized):
+            # Find best drone using existing logic
+            task_type = self._task_for_severity(victim.injury_severity)
+            best_drone_id = self.fleet.get_best_drone_for(task_type, victim.position, victim.injury_severity)
+            
+            if best_drone_id and best_drone_id not in self.assigned_drones:
+                assignments.append({
+                    'drone_id': best_drone_id,
+                    'victim_id': victim.victim_id,
+                    'priority': idx + 1
+                })
+                self.assigned_drones.add(best_drone_id)
+        
+        return assignments
+
     def assign_missions(self, victims: List[VictimState], current_tick: int = 0) -> List[MissionAssignment]:
         """
         Main assignment loop.
@@ -64,7 +238,7 @@ class CoordinatorAgent:
                 continue
             
             # Only assign missions to confirmed victims (high confidence)
-            if not v.is_confirmed:
+            if v.detection_confidence < 0.65:
                 print(f"[Coordinator] Victim {v.victim_id} not confirmed (confidence: {v.detection_confidence:.2f}) - skipping")
                 continue
             
@@ -73,6 +247,20 @@ class CoordinatorAgent:
         print(f"[Coordinator] {len(assignable)} assignable victims out of {len(victims)} total "
               f"(detected: {sum(1 for v in victims if v.is_detected)}, "
               f"confirmed: {sum(1 for v in victims if v.is_confirmed)}).")
+
+        # Try LLM-powered replanning if enabled
+        llm_assignments = []
+        if self.use_llm_replanning:
+            try:
+                # Convert fleet to dict format for LLM
+                fleet_dict = {
+                    'drones': self.fleet.drones,
+                    'assignments': self.fleet.assignments
+                }
+                llm_assignments = self.replan_missions(fleet_dict, assignable)
+                print(f"[Coordinator] LLM replanning produced {len(llm_assignments)} candidate assignments")
+            except Exception as e:
+                print(f"[Coordinator] LLM replanning failed: {e}, using fallback")
 
         # Prioritize
         prioritized = self.prioritize_victims(assignable)
@@ -84,7 +272,65 @@ class CoordinatorAgent:
             if getattr(assign, 'status', 'pending') != 'completed':
                 busy_drones.add(assign.drone_id)
 
+        # Process LLM assignments first if available
+        if llm_assignments:
+            for llm_assign in llm_assignments:
+                drone_id = llm_assign.get('drone_id')
+                victim_id = llm_assign.get('victim_id')
+                
+                # Find the victim object
+                victim = None
+                for v in assignable:
+                    if v.victim_id == victim_id:
+                        victim = v
+                        break
+                
+                if victim is None:
+                    print(f"[Coordinator] LLM assigned victim {victim_id} not found in assignable list")
+                    continue
+                
+                # Check drone validity
+                if drone_id not in self.fleet.drones:
+                    print(f"[Coordinator] LLM assigned drone {drone_id} not found in fleet")
+                    continue
+                
+                if drone_id in busy_drones or drone_id in self.assigned_drones:
+                    print(f"[Coordinator] LLM assigned drone {drone_id} is busy or already assigned")
+                    continue
+                
+                # Verify capability
+                task_type = self._task_for_severity(victim.injury_severity)
+                can, reason = self.fleet.can_perform_mission(
+                    drone_id, task_type, estimated_duration_min=15.0, victim_location=victim.position
+                )
+                if not can:
+                    print(f"[Coordinator] LLM assigned drone {drone_id} cannot perform {task_type}: {reason}")
+                    continue
+                
+                # Create mission assignment
+                mission_id = self.fleet.create_assignment(
+                    drone_id=drone_id,
+                    victim_id=victim.victim_id,
+                    task_type=task_type,
+                    estimated_duration_min=15.0,
+                    current_tick=current_tick
+                )
+                if mission_id is None:
+                    print(f"[Coordinator] Failed to create assignment for {victim.victim_id} from LLM.")
+                    continue
+
+                self.assigned_drones.add(drone_id)
+                busy_drones.add(drone_id)
+                assignment = self.fleet.assignments[mission_id]
+                assignments.append(assignment)
+                print(f"[Coordinator] LLM-assigned drone {drone_id} to victim {victim.victim_id} (mission {mission_id})")
+
+        # Process remaining victims using existing heuristic logic
         for victim in prioritized:
+            # Skip if already assigned by LLM
+            if victim.victim_id in [la.get('victim_id') for la in llm_assignments]:
+                continue
+            
             # Determine task type based on injury severity
             task_type = self._task_for_severity(victim.injury_severity)
             print(f"[Coordinator] Victim {victim.victim_id} severity {victim.injury_severity} -> task {task_type}")

@@ -10,6 +10,11 @@ from typing import Optional, Literal
 from dataclasses import dataclass, field
 from enum import Enum
 
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+
 
 class RuntimeMode(str, Enum):
     """Available runtime modes for RescueNet AI."""
@@ -44,6 +49,11 @@ class Settings:
     # General settings
     log_level: str = field(default="INFO")
     
+    # LLM configuration (DeepSeek)
+    llm_base_url: str = field(default="https://api.deepseek.com")
+    llm_api_key: str = field(default="")
+    llm_model: str = field(default="deepseek-chat")
+    
     def __post_init__(self):
         """Validate settings after initialization."""
         if not isinstance(self.mode, RuntimeMode):
@@ -58,6 +68,9 @@ class Settings:
         - RESCUENET_MODE: "demo" or "sim"
         - RESCUENET_MOCK_SEED: Seed for mock environment
         - RESCUENET_LOG_LEVEL: Logging level
+        - DEEPSEEK_BASE_URL: Base URL for LLM API
+        - DEEPSEEK_API_KEY: API key for LLM
+        - DEEPSEEK_MODEL: Model name for LLM
         """
         mode_str = os.getenv("RESCUENET_MODE", "").lower()
         mode = RuntimeMode.DEMO  # Default
@@ -72,7 +85,10 @@ class Settings:
             mock_num_victims=int(os.getenv("RESCUENET_MOCK_NUM_VICTIMS", "4")),
             airsim_host=os.getenv("RESCUENET_AIRSIM_HOST", "localhost"),
             airsim_port=int(os.getenv("RESCUENET_AIRSIM_PORT", "41451")),
-            log_level=os.getenv("RESCUENET_LOG_LEVEL", "INFO")
+            log_level=os.getenv("RESCUENET_LOG_LEVEL", "INFO"),
+            llm_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            llm_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+            llm_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
         )
     
     @classmethod
@@ -138,7 +154,10 @@ class Settings:
             "mock_num_victims": self.mock_num_victims,
             "airsim_host": self.airsim_host,
             "airsim_port": self.airsim_port,
-            "log_level": self.log_level
+            "log_level": self.log_level,
+            "llm_base_url": self.llm_base_url,
+            "llm_api_key": self.llm_api_key,
+            "llm_model": self.llm_model
         }
     
     def __str__(self) -> str:
@@ -195,3 +214,34 @@ def get_settings(mode_arg: Optional[str] = None, **kwargs) -> Settings:
             _settings_instance.mode = RuntimeMode(mode_arg.lower())
     
     return _settings_instance
+
+
+def get_llm_client(settings: Optional[Settings] = None) -> Optional[OpenAI]:
+    """
+    Get an OpenAI-compatible LLM client using the configured settings.
+    
+    Args:
+        settings: Optional Settings instance. If not provided, will use get_settings()
+        
+    Returns:
+        OpenAI client instance, or None if openai library is not installed
+        
+    Raises:
+        ValueError: If API key is not configured
+    """
+    if OpenAI is None:
+        print("Warning: openai library not installed. Install with: pip install openai")
+        return None
+    
+    if settings is None:
+        settings = get_settings()
+    
+    if not settings.llm_api_key:
+        raise ValueError("LLM API key not configured. Set DEEPSEEK_API_KEY environment variable.")
+    
+    client = OpenAI(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key
+    )
+    
+    return client
