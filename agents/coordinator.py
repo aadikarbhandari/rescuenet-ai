@@ -211,14 +211,12 @@ Only include assignments where a drone can reasonably reach the victim.
                 if assignments:
                     self.stats["llm_dispatches"] += 1
                     logger.info(f"LLM dispatch created {len(assignments)} assignments")
-                    import json, time as _time
                     try:
-                        df = "/tmp/rescuenet_decisions.json"
-                        try:
-                            with open(df) as f2: existing = json.load(f2)
-                        except: existing = []
-                        existing.append({"timestamp": _time.strftime("%H:%M:%S"), "type": "LLM Dispatch", "assignments": assignments})
-                        with open(df, "w") as f2: json.dump(existing[-20:], f2)
+                        import json as _j, time as _t, os as _o
+                        _df = "/tmp/rescuenet_decisions.json"
+                        _ex = _j.load(open(_df)) if _o.path.exists(_df) else []
+                        _ex.append({"timestamp": _t.strftime("%H:%M:%S"), "type": "LLM Dispatch", "count": len(assignments), "assignments": assignments})
+                        _j.dump(_ex[-20:], open(_df, "w"))
                     except: pass
                     return assignments
 

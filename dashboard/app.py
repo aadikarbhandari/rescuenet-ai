@@ -68,6 +68,7 @@ def update_fleet_from_env():
                 drone.status = status
                 drone.current_mission_id = d.get('current_mission', None)
         
+        st.session_state['victim_raw'] = {v.get('victim_id', v.get('id','')): v for v in victim_snapshots}
         for v in victim_snapshots:
             victim_id = v.get('victim_id', v.get('id', 'unknown'))
             fleet.update_victim(v)
@@ -298,9 +299,9 @@ def main():
                 "Severity": ("critical" if victim.severity >= 80 else "severe" if victim.severity >= 60 else "moderate" if victim.severity >= 40 else "minor"),
                 "Score": score,
                 "Position": f"({victim.position[0]:.1f}, {victim.position[1]:.1f}, {victim.position[2]:.1f})",
-                "Detected By": "unknown",
+                "Detected By": st.session_state.get('victim_raw', {}).get(victim.id, {}).get('detected_by', 'unknown'),
                 "Assigned Drone": victim.assigned_drone_id if victim.assigned_drone_id else "Unassigned",
-                "Status": "Rescued" if 0 <= env.tick and victim.assigned_drone_id is None else ("Assigned" if victim.assigned_drone_id else "Pending")
+                "Status": ("Assigned" if victim.assigned_drone_id else victim.status.capitalize() if victim.status else "Discovered")
             })
         
         df_victims = pd.DataFrame(victim_data)
