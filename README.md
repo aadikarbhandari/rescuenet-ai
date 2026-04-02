@@ -1,26 +1,22 @@
 # RescueNet AI
-
 Autonomous disaster response drone coordination system powered by AI agents.
 
 ## Overview
-
-RescueNet AI is an intelligent disaster response platform that coordinates a fleet of rescue drones to locate, prioritize, and assist victims during emergency situations. The system leverages AI agents for victim triage, mission planning, drone dispatch, and security monitoring.
+RescueNet AI is an intelligent disaster response platform that coordinates a fleet of rescue drones to locate, prioritize, and assist victims during emergency situations. The system uses AI agents for victim triage, mission planning, drone dispatch, and security monitoring — with DeepSeek LLM as the primary decision engine and rule-based fallback for resilience.
 
 ## Features
-
-- **AI-Powered Triage**: Prioritizes victims using DeepSeek LLM with rule-based fallback scoring
-- **Intelligent Dispatch**: Coordinates drone assignments based on severity, distance, and battery status
-- **Real-Time Dashboard**: Streamlit-based UI showing fleet status, victim locations, and mission progress
-- **REST API**: FastAPI server for external integrations and monitoring
-- **Security Monitoring**: Detects GPS spoofing, signal jamming, and anomalous drone behavior
-- **Dual Mode Operation**: Supports both demo (mock) and AirSim simulation environments
+- **AI-Powered Triage** — Prioritizes victims using DeepSeek LLM with rule-based fallback scoring
+- **Intelligent Dispatch** — Coordinates drone assignments based on victim severity, distance, and battery status
+- **Real-Time Dashboard** — Streamlit-based UI showing fleet status, victim locations, and mission progress
+- **REST API** — FastAPI server on port 8000 for external integrations and monitoring
+- **Security Monitoring** — Detects GPS spoofing, signal jamming, and anomalous drone behavior
+- **Dual Mode Operation** — Demo mode (mock environment) and AirSim mode (Unreal Engine simulation)
 
 ## Repo Structure
-
 ```
 rescuenet-ai/
 ├── agents/                    # AI agent modules
-│   ├── coordinator.py         # Drone dispatch & mission planning
+│   ├── coordinator.py         # Drone dispatch & mission planning (LLM + rule-based)
 │   ├── triage.py              # Victim prioritization scoring
 │   ├── security.py            # GPS spoofing & jamming detection
 │   ├── state_awareness.py     # Fleet state management
@@ -33,8 +29,7 @@ rescuenet-ai/
 │   ├── settings.py            # Configuration management
 │   └── __init__.py
 ├── dashboard/
-│   ├── app.py                 # Streamlit dashboard
-│   └── dash.py                # Dashboard auto-fixer utility
+│   └── app.py                 # Streamlit dashboard
 ├── simulation/
 │   ├── factory.py             # Environment factory
 │   ├── environment.py         # Abstract environment interface
@@ -44,109 +39,95 @@ rescuenet-ai/
 │       ├── adapter.py
 │       └── contracts.py
 ├── state/
-│   └── fleet_state.py         # Fleet state management
+│   └── fleet_state.py         # Fleet & mission state management
 └── main.py                    # Main entry point
 ```
 
 ## Setup
 
-1. **Clone the repository**
+1. Clone the repository
 
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-   Key dependencies include:
-   - `fastapi` & `uvicorn` - API server
-   - `streamlit` - Dashboard UI
-   - `pandas` - Data handling
-   - `requests` - HTTP client
-   - `openai` - LLM client
-   - `airsim` - AirSim simulator (optional, for AirSim mode)
+Key dependencies:
+- `fastapi` & `uvicorn` — API server
+- `streamlit` — Dashboard UI
+- `pandas` — Data handling
+- `requests` — HTTP client
+- `openai` — LLM client
+- `airsim` — AirSim simulator (optional, for AirSim mode only)
 
-3. **Configure environment variables** (see below)
+3. Configure environment variables (see below)
 
-## Required Environment Variables
+## Environment Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `DEEPSEEK_API_KEY` | DeepSeek API key for LLM triage/dispatch | Yes |
-| `DEEPSEEK_BASE_URL` | DeepSeek API endpoint | No (default provided) |
-| `DEEPSEEK_MODEL` | Model name (e.g., `deepseek-chat`) | No |
-| `RUNTIME_MODE` | Execution mode: `DEMO`, `AIRSIM`, or `SIM` | No (default: DEMO) |
-| `AIRSIM_IP` | AirSim simulator IP address | For AirSim mode |
-| `AIRSIM_PORT` | AirSim simulator port | For AirSim mode |
+| `DEEPSEEK_API_KEY` | DeepSeek/Vultr inference API key | Yes (falls back to rule-based if missing) |
+| `DEEPSEEK_BASE_URL` | API endpoint | No (default: Vultr inference) |
+| `DEEPSEEK_MODEL` | Model name | No (default: DeepSeek-V3.2) |
+| `RUNTIME_MODE` | `DEMO`, `AIRSIM`, or `SIM` | No (default: DEMO) |
+| `AIRSIM_IP` | AirSim simulator IP | AirSim mode only |
+| `AIRSIM_PORT` | AirSim simulator port | AirSim mode only |
 
-## How to Run Demo Mode
+## Running Demo Mode
 
-Demo mode uses a mock disaster environment for testing without requiring AirSim.
+Demo mode uses a mock disaster environment — no AirSim or Unreal Engine required.
 
 ```bash
-# Set runtime mode
-export RUNTIME_MODE=DEMO
-
-# Run the main system
-python main.py
+python main.py --mode demo --ticks 20
 ```
 
-The demo will:
-- Initialize a mock disaster scenario with 8 victims
-- Start the FastAPI server on port 8000
-- Launch the Streamlit dashboard (if enabled)
+What happens:
+- Initializes a mock disaster scenario with 3 drones and 4 victims
+- Drones discover and are dispatched to victims via LLM or rule-based dispatch
+- FastAPI server starts on port 8000
+- Simulation runs for the specified number of ticks
 
-**Dashboard Access**: Open `http://localhost:8501` in your browser
+**API docs:** http://localhost:8000/docs
 
-**API Documentation**: Available at `http://localhost:8000/docs`
+## Running the Dashboard
 
-## How to Run AirSim Mode
+Start the main system first, then in a separate terminal:
 
-AirSim mode connects to Microsoft AirSim for realistic drone simulation.
+```bash
+streamlit run dashboard/app.py
+```
 
-1. **Start AirSim** in the Unreal Engine environment
+**Dashboard:** http://localhost:8501
 
-2. **Configure connection**:
-   ```bash
-   export RUNTIME_MODE=AIRSIM
-   export AIRSIM_IP=127.0.0.1
-   export AIRSIM_PORT=41451
-   export DEEPSEEK_API_KEY=your_api_key
-   ```
+## Running AirSim Mode
 
-3. **Run the system**:
-   ```bash
-   python main.py
-   ```
+1. Start AirSim in Unreal Engine
+
+2. Configure and run:
+```bash
+export RUNTIME_MODE=AIRSIM
+export AIRSIM_IP=127.0.0.1
+export AIRSIM_PORT=41451
+export DEEPSEEK_API_KEY=your_api_key
+python main.py --mode airsim
+```
 
 ## Troubleshooting
 
-### API Key Issues
-- **Symptom**: Triage/dispatch falls back to rule-based mode
-- **Fix**: Ensure `DEEPSEEK_API_KEY` is set correctly in environment
+**Triage/dispatch falls back to rule-based mode**
+Ensure `DEEPSEEK_API_KEY` is set and the API endpoint is reachable.
 
-### Dashboard Not Loading
-- **Symptom**: Streamlit fails to start or shows connection errors
-- **Fix**: Check that the API server is running on port 8000
+**Dashboard shows empty data**
+Ensure `main.py` is running and the API server is up on port 8000 before launching Streamlit.
 
-### AirSim Connection Failed
-- **Symptom**: Adapter returns mock data despite AirSim mode
-- **Fix**: Verify AirSim is running and `AIRSIM_IP`/`AIRSIM_PORT` are correct
+**AirSim connection failed**
+Verify AirSim is running and `AIRSIM_IP`/`AIRSIM_PORT` are correct.
 
-### Missing Victims in Dashboard
-- **Symptom**: Dashboard shows empty victim list
-- **Fix**: Check `FleetState` victim management - known limitation in current version
-
-### Battery Drain Issues
-- **Symptom**: Drones lose battery too quickly or not at all
-- **Fix**: Battery logic is actively tuned in `mock_env.py` - values may need adjustment
-
-### Import Errors
-- **Symptom**: `ModuleNotFoundError` for internal modules
-- **Fix**: Ensure you're running from the project root directory
+**Import errors**
+Run from the project root directory, not from a subdirectory.
 
 ## Known Limitations
-
-- **LLM Dispatch Path**: Currently disabled (`if False and ...` in coordinator.py) - system uses rule-based dispatch
-- **Perception/Routing**: Stub modules require implementation
-- **Thread Safety**: Global state in API server is not thread-safe
-- **No Authentication**: API endpoints are publicly accessible
+- **Perception/Routing** — `perception.py`, `routing.py`, and `voice.py` are stubs pending implementation
+- **Thread Safety** — Global state in the API server is not thread-safe under concurrent load
+- **No Authentication** — API endpoints are publicly accessible
+- **AirSim Integration** — Full AirSim drone command execution requires Unreal Engine setup
