@@ -276,6 +276,18 @@ class MockDisasterEnv(Environment):
             snap["wind_speed_ms"] = self.wind_speed + self.rng.uniform(-0.5, 0.5)
             snap["temperature_c"] = self.temperature + self.rng.uniform(-1.0, 1.0)
             snap["visibility_m"] = self.visibility + self.rng.uniform(-50.0, 50.0)
+            # Add fields expected by security agent
+            pos = snap.get("position", (0.0, 0.0, 0.0))
+            snap["latitude"] = 47.641468 + pos[0] * 0.00001
+            snap["longitude"] = -122.140165 + pos[1] * 0.00001
+            snap["altitude"] = pos[2]
+            snap["timestamp"] = self._tick
+            snap["signal_strength"] = 85 if snap.get("operational_status") != "unavailable_fault" else 10
+            snap["battery_level"] = snap.get("battery_percent", 0.0)
+            # Add fields expected by fleet_state
+            snap["id"] = snap.get("drone_id")
+            snap["battery"] = snap.get("battery_percent", 0.0)
+            snap["status"] = snap.get("operational_status", "idle")
             snapshots.append(snap)
         return snapshots
 
@@ -683,5 +695,12 @@ class MockDisasterEnv(Environment):
                 "temperature_c": d.get("temperature_c", 20.0),
                 "visibility_m": d.get("visibility_m", 1000.0),
                 "current_mission": d.get("current_mission"),
+                # Fields expected by security agent
+                "latitude": 47.641468 + d.get("position", (0,0,0))[0] * 0.00001,
+                "longitude": -122.140165 + d.get("position", (0,0,0))[1] * 0.00001,
+                "altitude": d.get("position", (0,0,0))[2],
+                "timestamp": self._tick,
+                "signal_strength": 85 if d.get("operational_status") != "unavailable_fault" else 10,
+                "battery_level": d.get("battery_percent", 0.0),
             })
         return telemetry

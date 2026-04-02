@@ -180,7 +180,7 @@ def main():
                     'tick': tick,
                     'available_drones': len(fleet.get_available_drones()),
                     'active_missions': len([m for m in fleet.missions.values() 
-                                           if m.status == 'ACTIVE' or (hasattr(m.status, 'value') and m.status.value == 'ACTIVE')]),
+                                           if m.status in ['ACTIVE', 'PENDING'] or (hasattr(m.status, 'value') and m.status.value in ['ACTIVE', 'PENDING'])]),
                     'completed_missions': len(completed)
                 }
             }
@@ -188,7 +188,7 @@ def main():
             
             # Print summary
             print_tick_summary(tick, fleet, len([m for m in fleet.missions.values() 
-                                                  if m.status == 'ACTIVE' or (hasattr(m.status, 'value') and m.status.value == 'ACTIVE')]),
+                                                  if m.status in ['ACTIVE', 'PENDING'] or (hasattr(m.status, 'value') and m.status.value in ['ACTIVE', 'PENDING'])]),
                              alerts, victim_snapshots, new_assignments)
             
             # Small delay between ticks
