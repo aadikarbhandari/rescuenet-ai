@@ -226,7 +226,7 @@ def main():
                     "Drone ID": drone.id,
                     "Status": drone.status,
                     "Battery": f"{drone.battery:.1f}%",
-                    "Battery Raw": drone.battery,
+                    
                     "Mission": drone.current_mission_id if drone.current_mission_id else "None",
                     "Position": f"({drone.position[0]:.1f}, {drone.position[1]:.1f})",
                     "Health": drone.status
@@ -295,7 +295,7 @@ def main():
             score = calculate_victim_score(victim)
             victim_data.append({
                 "Victim ID": victim.id,
-                "Severity": str(victim.severity),
+                "Severity": ("critical" if victim.severity >= 80 else "severe" if victim.severity >= 60 else "moderate" if victim.severity >= 40 else "minor"),
                 "Score": score,
                 "Position": f"({victim.position[0]:.1f}, {victim.position[1]:.1f}, {victim.position[2]:.1f})",
                 "Detected By": "unknown",
