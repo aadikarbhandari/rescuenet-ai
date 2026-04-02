@@ -668,20 +668,3 @@ class MockDisasterEnv(Environment):
             "num_drones": len(self.drones),
             "num_targets": len(self.targets),
         }
-
-    def get_all_telemetry(self):
-        """Return lightweight telemetry for all drones in demo mode."""
-        telemetry = []
-        for d in self.drones:
-            telemetry.append({
-                "drone_id": d.get("drone_id"),
-                "position": d.get("position", [0, 0, 0]),
-                "battery_percent": d.get("battery_percent", 100.0),
-                "operational_status": d.get("operational_status", "unknown"),
-                "mechanical_health": d.get("mechanical_health", "ok"),
-                "wind_speed_ms": d.get("wind_speed_ms", 0.0),
-                "temperature_c": d.get("temperature_c", 20.0),
-                "visibility_m": d.get("visibility_m", 1000.0),
-                "current_mission": d.get("current_mission"),
-            })
-        return telemetry

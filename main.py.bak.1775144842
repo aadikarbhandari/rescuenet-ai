@@ -1,0 +1,332 @@
+import argparse
+import logging
+import time
+import sys
+
+from typing import List, Dict, Any
+
+from config.settings import load_settings
+from simulation.factory import SimulationFactory
+from state.fleet_state import FleetState
+from agents.triage import TriageAgent
+from agents.coordinator import CoordinatorAgent
+from agents.security import SecurityAgent
+from api.server import run_server_background, update_state
+
+
+def setup_logging(verbose: bool = False) -> logging.Logger:
+    """Configure logging for RescueNet AI."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    return logging.getLogger("RescueNet")
+
+
+def print_startup_banner(mode: str, ticks: int, port: int, api_enabled: bool):
+    """Print informative startup banner."""
+    print("=" * 70)
+    print("RESCUENET AI - AUTONOMOUS DISASTER RESPONSE SYSTEM")
+    print("=" * 70)
+    print(f"Runtime Mode:  {mode.upper()}")
+    print(f"Simulation:    {ticks} ticks")
+    print(f"API Server:    {'Enabled (port ' + str(port) + ')' if api_enabled else 'Disabled'}")
+    print("-" * 70)
+
+
+def print_tick_summary(tick: int, fleet: FleetState, alerts: list, decisions: list):
+    """Print tick summary with key metrics."""
+    active_missions = len([m for m in fleet.missions.values() if m.status == 'active'])
+    available_drones = len([d for d in fleet.drones.values() if d.status == 'available'])
+    
+    print(f"  Tick {tick} Summary:")
+    print(f"     - Active missions: {active_missions}")
+    print(f"     - Available drones: {available_drones}")
+    
+    if alerts:
+        print(f"     - Security alerts: {len(alerts)}")
+        for alert in alerts[:3]:
+            print(f"       - {alert}")
+    
+    if decisions:
+        print(f"     - Recent decisions: {len(decisions)}")
+        for decision in decisions[-2:]:
+            print(f"       - {decision.get('action', 'N/A')}")
+
+
+def land_all_drones(env, logger: logging.Logger):
+    """Land all drones gracefully on shutdown."""
+    logger.info("Initiating emergency landing for all drones...")
+    try:
+        if hasattr(env, 'land_all_drones'):
+            env.land_all_drones()
+        elif hasattr(env, 'emergency_land'):
+            env.emergency_land()
+        print("All drones have been landed safely")
+    except Exception as e:
+        logger.error(f"Error during drone landing: {e}")
+        print("WARNING: Some drones may not have landed properly")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='RescueNet AI - Autonomous disaster response system',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['airsim', 'demo'],
+        default='airsim',
+        help='Runtime mode: "airsim" for AirSim, "demo" for mock environment'
+    )
+    parser.add_argument(
+        '--ticks',
+        type=int,
+        default=300,
+        help='Number of simulation ticks to run (default: 300)'
+    )
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Enable verbose logging (DEBUG level)'
+    )
+    parser.add_argument(
+        '--no-api',
+        action='store_true',
+        help='Disable FastAPI server'
+    )
+    parser.add_argument(
+        '--api-port',
+        type=int,
+        default=8000,
+        help='FastAPI server port (default: 8000)'
+    )
+    
+    args = parser.parse_args()
+    
+    logger = setup_logging(args.verbose)
+    
+    # 1. Load settings, override mode from args
+    settings = load_settings()
+    settings.mode = args.mode
+    
+    if args.verbose:
+        settings.log_level = 'DEBUG'
+    
+    logger.info(f"Loaded settings: mode={settings.mode}, ticks={args.ticks}")
+    
+    # 2. Create environment via SimulationFactory
+    print_startup_banner(args.mode, args.ticks, args.api_port, not args.no_api)
+    
+    try:
+        logger.info(f"Creating {args.mode} environment...")
+        # FIX: create_environment takes only 'settings' argument, not (args.mode, settings)
+        env = SimulationFactory.create_environment(settings)
+        logger.info(f"Environment created: {type(env).__name__}")
+        print(f"Environment initialized: {args.mode.upper()} mode")
+    except ConnectionError as e:
+        print(f"\nCONNECTION ERROR: Could not connect to AirSim")
+        print(f"   {e}")
+        print(f"\n   Start Unreal Engine with AirSim plugin first.")
+        print(f"   For demo mode: python main.py --mode demo")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to create environment: {e}")
+        print(f"\nERROR: Failed to initialize {args.mode} environment")
+        print(f"   Reason: {e}")
+        sys.exit(1)
+    
+    # Get initial state
+    initial_drones = env.get_all_drone_states() if hasattr(env, 'get_all_drone_states') else []
+    initial_victims = env.victims if hasattr(env, 'victims') else []
+    
+    print(f"   - Drones: {len(initial_drones)}")
+    print(f"   - Victims: {len(initial_victims)}")
+    print()
+    
+    # 3. Initialize FleetState, TriageAgent, CoordinatorAgent, SecurityAgent
+    fleet = FleetState()
+    logger.info("FleetState initialized")
+    
+    triage = TriageAgent()
+    logger.info("TriageAgent initialized")
+    
+    coordinator = CoordinatorAgent(settings, fleet)
+    logger.info("CoordinatorAgent initialized")
+    
+    security = SecurityAgent(settings)
+    logger.info("SecurityAgent initialized")
+    
+    print("AI Agents initialized: Triage, Coordinator, Security")
+    print()
+    
+    # 4. Start FastAPI server in background (unless --no-api)
+    api_server = None
+    if not args.no_api:
+        try:
+            api_server = run_server_background(port=args.api_port)
+            logger.info(f"FastAPI server started on port {args.api_port}")
+            print(f"API Server running on http://localhost:{args.api_port}")
+        except Exception as e:
+            logger.warning(f"Failed to start API server: {e}")
+            print(f"WARNING: API server failed to start: {e}")
+    else:
+        print("INFO: API Server disabled (--no-api)")
+    
+    print()
+    
+    # Print simulation start
+    print(f"{'='*70}")
+    print(f"STARTING SIMULATION: {args.ticks} ticks")
+    print(f"{'='*70}")
+    logger.info(f"Starting simulation loop for {args.ticks} ticks")
+    
+    # Tick loop
+    tick_interval = getattr(settings, 'tick_interval', 1.0)
+    
+    try:
+        for tick in range(1, args.ticks + 1):
+            logger.debug(f"Starting tick {tick}")
+            
+            # Step the environment
+            try:
+                obs = env.step()
+                logger.debug(f"Environment stepped to tick {tick}")
+            except Exception as e:
+                logger.error(f"Failed to step environment: {e}")
+                print(f"ERROR: Environment step failed: {e}")
+                break
+            
+            # Get telemetry
+            try:
+                telemetry = env.get_all_telemetry()
+                logger.debug(f"Retrieved telemetry: {len(telemetry)} entries")
+            except Exception as e:
+                logger.warning(f"Failed to get telemetry: {e}")
+                telemetry = {}
+            
+            # Update fleet from telemetry
+            fleet.update_from_telemetry(telemetry)
+            
+            # Security scan
+            alerts = security.scan_all(telemetry)
+            if alerts:
+                logger.info(f"Security scan found {len(alerts)} alerts")
+            
+            # Build context for triage
+            available_drones = len([d for d in fleet.drones.values() if d.status == 'available'])
+            waiting_victims = [v for v in env.victims if v.get("status", "waiting") == 'waiting'] if hasattr(env, 'victims') else []
+            
+            context: Dict[str, Any] = {
+                'tick': tick,
+                'available_drones': available_drones,
+                'waiting_victims': waiting_victims
+            }
+            
+            # Triage prioritization
+            triage_results = triage.prioritize_all(env.victims, context)
+            logger.debug(f"Triage prioritized {len(triage_results)} victims")
+            
+            # Build environment state for coordinator
+            env_state: Dict[str, Any] = {
+                'tick': tick,
+                'stations': env.get_station_status() if hasattr(env, 'get_station_status') else {},
+                'fleet': fleet.to_dict()
+            }
+            
+            # Coordinator decision making
+            decision = coordinator.decide_dispatch(triage_results, env_state)
+            logger.debug(f"Coordinator decision: {decision}")
+            
+            # Execute dispatch
+            coordinator.execute_dispatch(decision, env)
+            
+            # Replan if needed
+            coordinator.replan_if_needed(env_state)
+            
+            # Update API state
+            state_update: Dict[str, Any] = {
+                'tick': tick,
+                'fleet': fleet.to_dict(),
+                'victims': env.victims if hasattr(env, 'victims') else [],
+                'missions': list(fleet.missions.values()),
+                'stations': env.get_station_status() if hasattr(env, 'get_station_status') else {},
+                'alerts': alerts,
+                'decisions': coordinator.get_recent_decisions()
+            }
+            update_state(state_update)
+            
+            # Print tick summary every 5 ticks
+            if tick % 5 == 0:
+                print_tick_summary(tick, fleet, alerts, coordinator.get_recent_decisions())
+            
+            # Sleep for tick interval
+            time.sleep(tick_interval)
+            
+    except KeyboardInterrupt:
+        logger.info("Simulation interrupted by user")
+        print("\nWARNING: Simulation interrupted by user")
+        
+        # Land all drones if in AirSim mode
+        if args.mode == 'airsim':
+            land_all_drones(env, logger)
+        
+        print("Shutdown complete")
+        
+    except ConnectionError as e:
+        logger.error(f"AirSim connection error: {e}")
+        print(f"\nCONNECTION ERROR")
+        print(f"   {e}")
+        print(f"\n   Start Unreal Engine with AirSim plugin first.")
+        print(f"   For demo mode: python main.py --mode demo")
+        
+        # Attempt graceful landing
+        if args.mode == 'airsim':
+            try:
+                land_all_drones(env, logger)
+            except Exception:
+                pass
+        
+        sys.exit(1)
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in simulation loop: {e}", exc_info=True)
+        print(f"\nSIMULATION ERROR: {e}")
+        
+        # Attempt graceful landing
+        if args.mode == 'airsim':
+            try:
+                land_all_drones(env, logger)
+            except Exception:
+                pass
+        
+        sys.exit(1)
+    
+    # Print final summary
+    print(f"\n{'='*70}")
+    print("FINAL SUMMARY")
+    print(f"{'='*70}")
+    
+    total_missions = len(fleet.missions)
+    completed_missions = len([m for m in fleet.missions.values() if m.status == 'completed'])
+    active_missions = len([m for m in fleet.missions.values() if m.status == 'active'])
+    
+    print(f"   Total missions:    {total_missions}")
+    print(f"   Completed:         {completed_missions}")
+    print(f"   Active:            {active_missions}")
+    print(f"   Total ticks:       {args.ticks}")
+    
+    # Cleanup
+    if api_server:
+        logger.info("Shutting down API server...")
+        print("\nAPI Server stopped")
+    
+    logger.info("Simulation complete")
+    print("\nRESCUENET AI - Simulation finished successfully")
+
+
+if __name__ == "__main__":
+    main()

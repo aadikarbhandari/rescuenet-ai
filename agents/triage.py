@@ -1,382 +1,593 @@
 """
-Priority scoring + drone assignment
+Triage Agent for RescueNet AI
+Priority scoring and victim prioritization using DeepSeek LLM with fallback rule-based scoring.
 """
-from typing import List, Tuple
-from dataclasses import dataclass
+from typing import List, Tuple, Optional, Dict, Any
+from dataclasses import dataclass, field
 import math
 import os
 import json
 import logging
+import time
+import requests
 
-# For LLM API calls
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
+from config.settings import Settings
+
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class TriageVictim:
     """Extended victim data for triage scoring."""
     victim_id: str
-    severity: str                     # "minor", "moderate", "severe", "critical"
-    conscious: bool                   # True if conscious, False if unconscious
-    bleeding: str                     # "none", "mild", "moderate", "severe"
-    body_temperature_c: float         # normal ~37.0
-    accessibility: float              # 0.0 (completely blocked) to 1.0 (fully accessible)
-    position: tuple                   # (x, y, z) coordinates
+    severity: str = "moderate"  # "minor", "moderate", "severe", "critical"
+    conscious: bool = True
+    bleeding: str = "none"  # "none", "mild", "moderate", "severe"
+    body_temperature_c: float = 37.0
+    accessibility: float = 0.5  # 0.0 (blocked) to 1.0 (fully accessible)
+    position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    injury_type: str = "unknown"
+    time_since_report: float = 0.0
+    additional_context: Dict[str, Any] = field(default_factory=dict)
+
 
 class TriageAgent:
-    def __init__(self):
-        pass
+    def __init__(self, settings: Optional[Settings] = None):
+        """
+        Initialize the TriageAgent.
+        
+        Args:
+            settings: Settings object containing DeepSeek configuration.
+                     If None, reads from environment variables.
+        """
+        self.settings = settings
+        self._victim_cache: Dict[str, Dict] = {}
+        self._cache_ttl = 300  # Cache TTL in seconds
+        
+    @property
+    def _base_url(self) -> str:
+        """Get DeepSeek base URL from settings or environment."""
+        if self.settings:
+            return getattr(self.settings, 'deepseek_base_url', None) or os.environ.get('DEEPSEEK_BASE_URL', '')
+        return os.environ.get('DEEPSEEK_BASE_URL', '')
+    
+    @property
+    def _api_key(self) -> str:
+        """Get DeepSeek API key from settings or environment."""
+        if self.settings:
+            return getattr(self.settings, 'deepseek_api_key', None) or os.environ.get('DEEPSEEK_API_KEY', '')
+        return os.environ.get('DEEPSEEK_API_KEY', '')
+    
+    @property
+    def _model(self) -> str:
+        """Get DeepSeek model from settings or environment."""
+        if self.settings:
+            return getattr(self.settings, 'deepseek_model', None) or os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+        return os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+    
+    def _check_llm_available(self) -> bool:
+        """Check if LLM is properly configured."""
+        return bool(self._base_url and self._api_key)
 
-    def compute_priority(self, victim: TriageVictim) -> Tuple[float, str]:
+    def _build_triage_prompt(self, victim: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> str:
+        """Build the prompt for DeepSeek LLM triage scoring."""
+        victim_info = json.dumps(victim, indent=2)
+        context_info = json.dumps(context, indent=2) if context else "{}"
+        
+        prompt = f"""You are a medical triage expert for disaster response. Analyze the following victim data and assign a rescue priority score.
+
+VICTIM DATA:
+{victim_info}
+
+CONTEXT:
+{context_info}
+
+Based on the victim data and context, provide a triage assessment in JSON format with the following fields:
+- "score": integer 0-100 (higher = more urgent)
+- "priority": "critical" | "high" | "medium" | "low"
+- "reasoning": detailed explanation of the scoring decision
+- "recommended_action": "extract" | "deliver_supplies" | "scout" | "monitor"
+
+Consider these factors:
+1. Severity of injuries (critical conditions like cardiac arrest, severe bleeding = highest priority)
+2. Time since incident (longer time = worse outcomes)
+3. Consciousness state (unconscious = more urgent)
+4. Vital signs (abnormal temperature, severe bleeding)
+5. Accessibility of location (easier access = higher effective priority for extraction)
+6. Available resources and current rescue queue
+
+Return ONLY valid JSON, no additional text."""
+        return prompt
+
+    def _parse_llm_response(self, response_text: str) -> Optional[Dict[str, Any]]:
+        """Parse the LLM response JSON."""
+        try:
+            # Try to find JSON in the response
+            response_text = response_text.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            result = json.loads(response_text)
+            
+            # Validate required fields
+            required_fields = ['score', 'priority', 'reasoning', 'recommended_action']
+            for field_name in required_fields:
+                if field_name not in result:
+                    logger.warning(f"Missing required field in LLM response: {field_name}")
+                    return None
+            
+            # Validate score range
+            if not isinstance(result['score'], (int, float)) or not (0 <= result['score'] <= 100):
+                logger.warning(f"Invalid score value: {result['score']}")
+                return None
+            
+            # Validate priority
+            valid_priorities = ['critical', 'high', 'medium', 'low']
+            if result['priority'] not in valid_priorities:
+                logger.warning(f"Invalid priority: {result['priority']}")
+                return None
+            
+            # Validate recommended_action
+            valid_actions = ['extract', 'deliver_supplies', 'scout', 'monitor']
+            if result['recommended_action'] not in valid_actions:
+                logger.warning(f"Invalid recommended_action: {result['recommended_action']}")
+                return None
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM response as JSON: {e}")
+            logger.debug(f"Response text: {response_text[:500]}")
+            return None
+        except Exception as e:
+            logger.error(f"Error parsing LLM response: {e}")
+            return None
+
+    def _call_deepseek(self, prompt: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
         """
-        Compute a priority score between 0 and 100 and a human‑readable reason.
-        Higher score means higher urgency.
+        Call DeepSeek API with retry logic.
+        
+        Args:
+            prompt: The prompt to send to DeepSeek
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            Parsed JSON response or None on failure
         """
+        if not self._check_llm_available():
+            logger.warning("DeepSeek not configured - LLM triage unavailable")
+            return None
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}"
+        }
+        
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": "You are a disaster response medical triage expert. Respond with valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.3,  # Low temperature for consistent triage decisions
+            "max_tokens": 500
+        }
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    f"{self._base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'choices' in data and len(data['choices']) > 0:
+                        content = data['choices'][0]['message']['content']
+                        return self._parse_llm_response(content)
+                elif response.status_code == 429:
+                    # Rate limited - wait and retry
+                    wait_time = (attempt + 1) * 2
+                    logger.warning(f"Rate limited by DeepSeek API, waiting {wait_time}s before retry")
+                    time.sleep(wait_time)
+                    continue
+                elif response.status_code == 401:
+                    logger.error("DeepSeek API authentication failed - invalid API key")
+                    return None
+                else:
+                    logger.warning(f"DeepSeek API returned status {response.status_code}: {response.text[:200]}")
+                    
+            except requests.exceptions.Timeout:
+                logger.warning(f"DeepSeek API timeout on attempt {attempt + 1}/{max_retries}")
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"DeepSeek API connection error on attempt {attempt + 1}/{max_retries}: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error calling DeepSeek API: {e}")
+            
+            if attempt < max_retries - 1:
+                time.sleep(1 * (attempt + 1))
+        
+        logger.error(f"Failed to get valid response from DeepSeek after {max_retries} attempts")
+        return None
+
+    def score_victim_llm(self, victim: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Use DeepSeek to score a single victim. Returns score + reasoning.
+        
+        Args:
+            victim: Dictionary containing victim information
+            context: Optional context dictionary with additional information
+            
+        Returns:
+            Dictionary with keys:
+                - victim_id: str
+                - score: float (0-100)
+                - priority: str ("critical", "high", "medium", "low")
+                - reasoning: str
+                - recommended_action: str ("extract", "deliver_supplies", "scout", "monitor")
+                - method: str ("llm" or "fallback")
+        """
+        victim_id = victim.get('victim_id', 'unknown')
+        context = context or {}
+        
+        # Check cache first
+        cache_key = f"{victim_id}_{hash(json.dumps(victim, sort_keys=True))}"
+        if cache_key in self._victim_cache:
+            cached = self._victim_cache[cache_key]
+            if time.time() - cached.get('_cached_at', 0) < self._cache_ttl:
+                logger.debug(f"Using cached triage result for victim {victim_id}")
+                return cached
+        
+        # Try LLM-based scoring
+        if self._check_llm_available():
+            prompt = self._build_triage_prompt(victim, context)
+            llm_result = self._call_deepseek(prompt)
+            
+            if llm_result is not None:
+                result = {
+                    'victim_id': victim_id,
+                    'score': float(llm_result.get('score', 50)),
+                    'priority': llm_result.get('priority', 'medium'),
+                    'reasoning': llm_result.get('reasoning', ''),
+                    'recommended_action': llm_result.get('recommended_action', 'monitor'),
+                    'method': 'llm'
+                }
+                # Cache the result
+                result['_cached_at'] = time.time()
+                self._victim_cache[cache_key] = result
+                logger.info(f"LLM triage for victim {victim_id}: score={result['score']}, priority={result['priority']}")
+                return result
+        
+        # Fallback to rule-based scoring
+        logger.info(f"Using fallback rule-based triage for victim {victim_id}")
+        return self._fallback_score(victim, context)
+
+    def _fallback_score(self, victim: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Rule-based fallback scoring when LLM is unavailable.
+        
+        Args:
+            victim: Dictionary containing victim information
+            context: Optional context dictionary
+            
+        Returns:
+            Dictionary with triage assessment
+        """
+        victim_id = victim.get('victim_id', 'unknown')
+        
+        # Extract victim attributes with defaults
+        severity = victim.get('severity') or victim.get('injury_severity', 'moderate')
+        conscious = victim.get('conscious', True)
+        bleeding = victim.get('bleeding', 'none')
+        body_temp = victim.get('body_temperature_c', victim.get('body_temperature', 37.0))
+        accessibility = victim.get('accessibility', 0.5)
+        time_since_report = victim.get('time_since_report', 0)
+        injury_type = victim.get('injury_type', 'unknown')
+        
         score = 0.0
         reasons = []
-
-        # 1. Severity weight (0‑30)
+        
+        # 1. Severity weight (0-30)
         severity_weights = {
             "critical": 30,
             "severe": 22,
             "moderate": 14,
             "minor": 6
         }
-        severity_score = severity_weights.get(victim.severity, 0)
+        severity_score = severity_weights.get(severity, 14)
         score += severity_score
-        reasons.append(f"severity {victim.severity} (+{severity_score})")
-
-        # 2. Consciousness (0‑20)
-        if not victim.conscious:
+        reasons.append(f"severity={severity} (+{severity_score})")
+        
+        # 2. Injury type specific scoring
+        critical_injuries = ['cardiac arrest', 'respiratory failure', 'severe burns', 'amputation']
+        high_injuries = ['bleeding', 'fracture', 'shock', 'head injury']
+        
+        if injury_type in critical_injuries:
+            score += 20
+            reasons.append(f"critical_injury={injury_type} (+20)")
+        elif injury_type in high_injuries:
+            score += 12
+            reasons.append(f"high_injury={injury_type} (+12)")
+        
+        # 3. Consciousness (0-20)
+        if not conscious:
             score += 20
             reasons.append("unconscious (+20)")
-        else:
-            reasons.append("conscious (+0)")
-
-        # 3. Bleeding (0‑25)
+        
+        # 4. Bleeding (0-25)
         bleeding_weights = {
             "severe": 25,
             "moderate": 15,
             "mild": 8,
             "none": 0
         }
-        bleeding_score = bleeding_weights.get(victim.bleeding, 0)
+        bleeding_score = bleeding_weights.get(bleeding, 0)
         score += bleeding_score
-        reasons.append(f"bleeding {victim.bleeding} (+{bleeding_score})")
-
-        # 4. Body temperature (0‑15)
-        # Normal ~37°C, hypothermia <35°C, hyperthermia >39°C
-        temp = victim.body_temperature_c
-        if temp < 35.0 or temp > 39.0:
+        reasons.append(f"bleeding={bleeding} (+{bleeding_score})")
+        
+        # 5. Body temperature (0-15)
+        if body_temp < 35.0 or body_temp > 39.0:
             score += 15
-            reasons.append(f"extreme temperature {temp:.1f}°C (+15)")
-        elif 35.0 <= temp <= 37.5:
-            reasons.append(f"normal temperature {temp:.1f}°C (+0)")
-        else:  # 37.5‑39.0 mild fever
+            reasons.append(f"extreme_temp={body_temp}°C (+15)")
+        elif 37.5 < body_temp <= 39.0:
             score += 7
-            reasons.append(f"fever {temp:.1f}°C (+7)")
-
-        # 5. Accessibility (0‑10)
-        # Inaccessible victims are harder to reach, lower urgency adjustment
-        access_bonus = victim.accessibility * 10.0
-        score += access_bonus
-        reasons.append(f"accessibility {victim.accessibility:.2f} (+{access_bonus:.1f})")
-
-        # Ensure score is within 0‑100
+            reasons.append(f"fever={body_temp}°C (+7)")
+        
+        # 6. Time since report (0-15)
+        if time_since_report > 60:
+            score += 15
+            reasons.append(f"time_delay={time_since_report:.0f}min (+15)")
+        elif time_since_report > 30:
+            score += 10
+            reasons.append(f"time_delay={time_since_report:.0f}min (+10)")
+        elif time_since_report > 15:
+            score += 5
+            reasons.append(f"time_delay={time_since_report:.0f}min (+5)")
+        
+        # 7. Accessibility - easier access = higher effective priority
+        accessibility_bonus = accessibility * 10.0
+        score += accessibility_bonus
+        reasons.append(f"accessibility={accessibility:.2f} (+{accessibility_bonus:.1f})")
+        
+        # Ensure score is within 0-100
         score = max(0.0, min(100.0, score))
+        
+        # Determine priority category
+        if score >= 80:
+            priority = "critical"
+            recommended_action = "extract"
+        elif score >= 60:
+            priority = "high"
+            recommended_action = "extract"
+        elif score >= 40:
+            priority = "medium"
+            recommended_action = "deliver_supplies"
+        else:
+            priority = "low"
+            recommended_action = "monitor"
+        
+        reasoning = f"Rule-based score {score:.1f}: {', '.join(reasons)}"
+        
+        result = {
+            'victim_id': victim_id,
+            'score': score,
+            'priority': priority,
+            'reasoning': reasoning,
+            'recommended_action': recommended_action,
+            'method': 'fallback'
+        }
+        
+        # Cache the result
+        cache_key = f"{victim_id}_{hash(json.dumps(victim, sort_keys=True))}"
+        result['_cached_at'] = time.time()
+        self._victim_cache[cache_key] = result
+        
+        return result
 
-        reason_str = f"Score {score:.1f}: " + ", ".join(reasons)
-        return score, reason_str
+    def prioritize_all(self, victims: List[Dict[str, Any]], context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        Score all detected victims, sort descending by score, return prioritized list.
+        
+        Args:
+            victims: List of victim dictionaries
+            context: Optional context dictionary with additional information
+            
+        Returns:
+            List of victim dictionaries with triage scores, sorted by priority (highest first)
+        """
+        if not victims:
+            logger.warning("No victims provided for prioritization")
+            return []
+        
+        context = context or {}
+        scored_victims = []
+        
+        for victim in victims:
+            # Skip undetected victims if the attribute exists
+            if isinstance(victim, dict):
+                if not victim.get('is_detected', True):
+                    continue
+            elif hasattr(victim, 'is_detected') and not victim.is_detected:
+                continue
+            
+            # Score the victim
+            triage_result = self.score_victim_llm(victim, context)
+            scored_victims.append(triage_result)
+        
+        # Sort by score descending
+        scored_victims.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Add rank information
+        for rank, victim in enumerate(scored_victims, 1):
+            victim['rank'] = rank
+        
+        logger.info(f"Prioritized {len(scored_victims)} victims")
+        return scored_victims
+
+    def get_victims_by_action(self, prioritized_victims: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Group victims by recommended action.
+        
+        Args:
+            prioritized_victims: List of victim dictionaries with recommended_action
+            
+        Returns:
+            Dictionary mapping action to list of victims
+        """
+        action_groups = {
+            'extract': [],
+            'deliver_supplies': [],
+            'scout': [],
+            'monitor': []
+        }
+        
+        for victim in prioritized_victims:
+            action = victim.get('recommended_action', 'monitor')
+            if action in action_groups:
+                action_groups[action].append(victim)
+        
+        return action_groups
+
+    def clear_cache(self):
+        """Clear the victim cache."""
+        self._victim_cache.clear()
+        logger.debug("Victim cache cleared")
+
+    # Legacy methods for backward compatibility
+    
+    def compute_priority(self, victim: TriageVictim) -> Tuple[float, str]:
+        """
+        Compute a priority score between 0 and 100 (legacy method).
+        
+        Args:
+            victim: TriageVictim dataclass instance
+            
+        Returns:
+            Tuple of (score, reason_string)
+        """
+        victim_dict = {
+            'victim_id': victim.victim_id,
+            'severity': victim.severity,
+            'conscious': victim.conscious,
+            'bleeding': victim.bleeding,
+            'body_temperature_c': victim.body_temperature_c,
+            'accessibility': victim.accessibility,
+            'injury_type': victim.injury_type,
+            'time_since_report': victim.time_since_report
+        }
+        result = self._fallback_score(victim_dict)
+        return result['score'], result['reasoning']
 
     def prioritize_victims(self, victims: List[TriageVictim]) -> List[Tuple[TriageVictim, float, str]]:
         """
-        Sort victims by priority descending.
-        Returns list of (victim, score, reason) tuples.
+        Sort victims by priority descending (legacy method).
+        
+        Args:
+            victims: List of TriageVictim instances
+            
+        Returns:
+            List of (victim, score, reason) tuples
         """
         scored = []
         for victim in victims:
             score, reason = self.compute_priority(victim)
             scored.append((victim, score, reason))
-
-        # Sort by score descending
+        
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored
 
-    def triage_from_victim_states(self, victim_states: List[object]) -> List[Tuple[str, float, str]]:
+    def triage_from_victim_states(self, victim_states: List[Any]) -> List[Tuple[str, float, str]]:
         """
-        Convenience method that accepts generic victim‑state‑like objects
-        (must have the required attributes) and returns sorted IDs with scores.
-        Only triages detected victims.
+        Convenience method for backward compatibility.
+        
+        Args:
+            victim_states: List of victim state objects
+            
+        Returns:
+            List of (victim_id, score, reason) tuples
         """
-        triage_victims = []
+        victims = []
         for vs in victim_states:
-            # Skip undetected victims
             if hasattr(vs, 'is_detected') and not vs.is_detected:
                 continue
-                
-            # Convert generic object to TriageVictim
-            # Expect attributes: victim_id, injury_severity, conscious, bleeding,
-            # body_temperature_c, accessibility, position
-            tv = TriageVictim(
-                victim_id=getattr(vs, 'victim_id', 'unknown'),
-                severity=getattr(vs, 'injury_severity', 'moderate'),
-                conscious=getattr(vs, 'conscious', True),
-                bleeding=getattr(vs, 'bleeding', 'none'),
-                body_temperature_c=getattr(vs, 'body_temperature_c', 37.0),
-                accessibility=getattr(vs, 'accessibility', 0.5),
-                position=getattr(vs, 'position', (0.0, 0.0, 0.0))
-            )
-            triage_victims.append(tv)
-
-        prioritized = self.prioritize_victims(triage_victims)
-        # Return simplified list: (victim_id, score, reason)
-        return [(item[0].victim_id, item[1], item[2]) for item in prioritized]
+            
+            victim_dict = {
+                'victim_id': getattr(vs, 'victim_id', 'unknown'),
+                'severity': getattr(vs, 'injury_severity', 'moderate'),
+                'conscious': getattr(vs, 'conscious', True),
+                'bleeding': getattr(vs, 'bleeding', 'none'),
+                'body_temperature_c': getattr(vs, 'body_temperature_c', 37.0),
+                'accessibility': getattr(vs, 'accessibility', 0.5),
+                'injury_type': getattr(vs, 'injury_type', 'unknown'),
+                'time_since_report': getattr(vs, 'time_since_report', 0)
+            }
+            victims.append(victim_dict)
+        
+        prioritized = self.prioritize_all(victims)
+        return [(v['victim_id'], v['score'], v['reasoning']) for v in prioritized]
 
     def triage_score_victim(self, victim_data: dict) -> dict:
         """
-        Use LLM to score victim priority based on injury_type, location, and time_since_report.
+        Use LLM to score victim priority based on injury data (legacy method).
         
         Args:
-            victim_data: dict with keys:
-                - victim_id: str
-                - injury_type: str (e.g., "burn", "fracture", "bleeding", "cardiac arrest")
-                - location: dict with "x", "y", "z" or tuple
-                - time_since_report: float (minutes since incident was reported)
-                - additional_context: optional dict with extra medical info
-        
+            victim_data: Dictionary with victim information
+            
         Returns:
-            dict with keys:
-                - victim_id: str
-                - priority: str ("critical", "serious", "moderate", "minor")
-                - score: float (0-100)
-                - reason: str
-                - method: str ("llm" or "fallback")
+            Dictionary with triage assessment
         """
-        victim_id = victim_data.get('victim_id', 'unknown')
-        injury_type = victim_data.get('injury_type', 'unknown')
-        location = victim_data.get('location', {'x': 0, 'y': 0, 'z': 0})
-        time_since_report = victim_data.get('time_since_report', 0)
-        additional_context = victim_data.get('additional_context', {})
-        
-        # Try LLM-based scoring first
-        llm_result = self._llm_triage_score(
-            victim_id=victim_id,
-            injury_type=injury_type,
-            location=location,
-            time_since_report=time_since_report,
-            additional_context=additional_context
-        )
-        
-        if llm_result is not None:
-            return llm_result
-        
-        # Fallback to deterministic scoring
-        return self._fallback_triage_score(
-            victim_id=victim_id,
-            injury_type=injury_type,
-            time_since_report=time_since_report,
-            additional_context=additional_context
-        )
-    
+        return self.score_victim_llm(victim_data, {})
+
     def _llm_triage_score(self, victim_id: str, injury_type: str, location: dict, 
-                          time_since_report: float, additional_context: dict) -> dict:
+                          time_since_report: float, additional_context: dict) -> Optional[dict]:
         """
-        Call LLM API to get triage priority score.
-        Returns None if the call fails.
+        Internal LLM triage scoring (legacy method).
+        
+        Args:
+            victim_id: Victim identifier
+            injury_type: Type of injury
+            location: Location dict
+            time_since_report: Time since report
+            additional_context: Additional context
+            
+        Returns:
+            Triage result or None
         """
-        # Check for required environment variables
-        base_url = os.environ.get('DEEPSEEK_BASE_URL')
-        api_key = os.environ.get('DEEPSEEK_API_KEY')
-        model = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
-        
-        if not base_url or not api_key:
-            logger.warning("Missing DEEPSEEK_BASE_URL or DEEPSEEK_API_KEY, using fallback")
-            return None
-        
-        if OpenAI is None:
-            logger.warning("OpenAI client not available, using fallback")
-            return None
-        
-        try:
-            client = OpenAI(base_url=base_url, api_key=api_key)
-            
-            # Build context for the LLM
-            context_parts = [
-                f"Injury type: {injury_type}",
-                f"Time since report: {time_since_report:.1f} minutes",
-                f"Location: x={location.get('x', 0)}, y={location.get('y', 0)}, z={location.get('z', 0)}"
-            ]
-            
-            for key, value in additional_context.items():
-                context_parts.append(f"{key}: {value}")
-            
-            context_str = "\n".join(context_parts)
-            
-            prompt = f"""You are a medical triage expert for a disaster response system.
-Analyze the following victim information and assign a priority level:
-
-{context_str}
-
-Based on the injury type, time elapsed, and other factors, determine the priority:
-- "critical": Immediate life-threatening condition requiring immediate rescue
-- "serious": Severe injury requiring rescue within minutes to hours
-- "moderate": Moderate injury that can wait for rescue
-- "minor": Minor injuries, can wait longer
-
-Respond with a JSON object containing:
-{{
-    "priority": "<priority_level>",
-    "reason": "<brief explanation of the priority decision>"
-}}
-
-Only respond with the JSON object, no other text."""
-
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a medical triage expert for disaster response."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=200
-            )
-            
-            content = response.choices[0].message.content.strip()
-            
-            # Parse JSON response
-            try:
-                # Handle potential markdown code blocks
-                if content.startswith("```"):
-                    content = content.split("```")[1]
-                    if content.startswith("json"):
-                        content = content[4:]
-                    content = content.strip()
-                
-                llm_result = json.loads(content)
-                priority = llm_result.get('priority', 'moderate')
-                reason = llm_result.get('reason', 'LLM triage assessment')
-                
-                # Map priority to score
-                priority_to_score = {
-                    'critical': 90.0,
-                    'serious': 65.0,
-                    'moderate': 35.0,
-                    'minor': 10.0
-                }
-                score = priority_to_score.get(priority.lower(), 50.0)
-                
-                return {
-                    'victim_id': victim_id,
-                    'priority': priority,
-                    'score': score,
-                    'reason': f"LLM: {reason}",
-                    'method': 'llm'
-                }
-                
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse LLM response as JSON: {e}")
-                return None
-                
-        except Exception as e:
-            logger.warning(f"LLM triage call failed: {e}")
-            return None
-    
-    def _fallback_triage_score(self, victim_id: str, injury_type: str, 
-                                time_since_report: float, additional_context: dict) -> dict:
-        """
-        Deterministic fallback triage scoring when LLM is unavailable.
-        """
-        # Base priority by injury type
-        injury_priority = {
-            'cardiac arrest': 'critical',
-            'severe bleeding': 'critical',
-            'airway obstruction': 'critical',
-            'burns (severe)': 'critical',
-            'fracture (open)': 'serious',
-            'internal bleeding': 'serious',
-            'concussion': 'serious',
-            'burns (moderate)': 'moderate',
-            'fracture (closed)': 'moderate',
-            'lacerations': 'moderate',
-            'bruising': 'minor',
-            'minor burns': 'minor',
-            'scratches': 'minor'
-        }
-        
-        priority = injury_priority.get(injury_type.lower(), 'moderate')
-        
-        # Adjust based on time since report
-        time_multiplier = 1.0
-        if time_since_report > 60:  # Over 1 hour
-            time_multiplier = 1.3
-            if priority == 'minor':
-                priority = 'moderate'
-            elif priority == 'moderate':
-                priority = 'serious'
-            elif priority == 'serious':
-                priority = 'critical'
-        elif time_since_report > 30:  # Over 30 minutes
-            time_multiplier = 1.15
-            if priority == 'minor':
-                priority = 'moderate'
-        
-        # Calculate score
-        base_scores = {
-            'critical': 85.0,
-            'serious': 60.0,
-            'moderate': 35.0,
-            'minor': 15.0
-        }
-        
-        score = base_scores.get(priority, 50.0) * time_multiplier
-        score = min(100.0, score)
-        
-        return {
+        victim = {
             'victim_id': victim_id,
-            'priority': priority,
-            'score': score,
-            'reason': f"Fallback: {injury_type}, {time_since_report:.1f}min elapsed",
-            'method': 'fallback'
+            'injury_type': injury_type,
+            'location': location,
+            'time_since_report': time_since_report,
+            'additional_context': additional_context
         }
-    
-    def triage_with_llm(self, victim_states: List[object]) -> List[Tuple[str, float, str, str]]:
+        return self.score_victim_llm(victim, additional_context)
+
+    def _fallback_triage_score(self, victim_id: str, injury_type: str, 
+                               time_since_report: float, additional_context: dict) -> dict:
         """
-        Enhanced triage that uses LLM scoring when available.
-        Returns list of (victim_id, score, reason, method) tuples sorted by priority.
+        Fallback triage scoring (legacy method).
+        
+        Args:
+            victim_id: Victim identifier
+            injury_type: Type of injury
+            time_since_report: Time since report
+            additional_context: Additional context
+            
+        Returns:
+            Triage result
         """
-        results = []
-        
-        for vs in victim_states:
-            # Skip undetected victims
-            if hasattr(vs, 'is_detected') and not vs.is_detected:
-                continue
-            
-            # Extract data for LLM scoring
-            victim_data = {
-                'victim_id': getattr(vs, 'victim_id', 'unknown'),
-                'injury_type': getattr(vs, 'injury_type', 'moderate'),
-                'location': getattr(vs, 'position', {'x': 0, 'y': 0, 'z': 0}),
-                'time_since_report': getattr(vs, 'time_since_report', 0),
-                'additional_context': {
-                    'conscious': getattr(vs, 'conscious', True),
-                    'bleeding': getattr(vs, 'bleeding', 'none'),
-                    'body_temperature_c': getattr(vs, 'body_temperature_c', 37.0),
-                    'accessibility': getattr(vs, 'accessibility', 0.5)
-                }
-            }
-            
-            result = self.triage_score_victim(victim_data)
-            results.append((
-                result['victim_id'],
-                result['score'],
-                result['reason'],
-                result['method']
-            ))
-        
-        # Sort by score descending
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results
+        victim = {
+            'victim_id': victim_id,
+            'injury_type': injury_type,
+            'time_since_report': time_since_report,
+            'additional_context': additional_context
+        }
+        return self._fallback_score(victim, additional_context)
