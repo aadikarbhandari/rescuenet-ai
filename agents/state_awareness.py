@@ -33,21 +33,12 @@ class StateAwarenessAgent:
         for entry in raw_data:
             drone_id = entry["drone_id"]
             # Create or update DroneState
-            drone_state = DroneState(
-                drone_id=drone_id,
-                battery_percent=entry["battery_percent"],
-                mechanical_health=entry["mechanical_health"],
-                sensor_status=entry["sensor_status"],
-                payload_kg=entry["payload_kg"],
-                winch_status=entry["winch_status"],
-                position=entry["position"],
-                wind_speed_ms=entry["wind_speed_ms"],
-                temperature_c=entry["temperature_c"],
-                visibility_m=entry["visibility_m"],
-                current_mission=entry.get("current_mission"),
-                operational_status=entry.get("operational_status", "available")
-            )
-            self.fleet.add_or_update_drone(drone_state)
+            if drone_id in self.fleet.drones:
+                drone = self.fleet.drones[drone_id]
+                drone.battery = entry.get("battery_percent", entry.get("battery", 100.0))
+                drone.position = tuple(entry.get("position", (0.0, 0.0, 0.0)))
+                drone.status = entry.get("operational_status", "idle")
+                drone.current_mission_id = entry.get("current_mission", None)
 
     def mark_availability(self) -> Dict[str, bool]:
         """

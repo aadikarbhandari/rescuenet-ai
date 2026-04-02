@@ -554,7 +554,7 @@ class MockDisasterEnv(Environment):
                 # Recover after 3 ticks
                 if "fault_since" not in d:
                     d["fault_since"] = self._tick
-                elif self._tick - d["fault_since"] >= 3:
+                elif d.get('fault_since') is not None and self._tick - d['fault_since'] >= 3:
                     d["operational_status"] = "idle"
                     d["fault_since"] = None
                     print(f"[MockEnv] Drone {d['drone_id']} recovered from fault, now idle")

@@ -22,7 +22,7 @@ def init_system():
     if 'env' not in st.session_state:
         try:
             st.session_state.env = get_environment()
-            st.session_state.fleet = FleetState()
+            st.session_state.fleet = FleetState(['drone_1', 'drone_2', 'drone_3'])
             st.session_state.state_agent = StateAwarenessAgent(st.session_state.fleet)
             st.session_state.coordinator = CoordinatorAgent(st.session_state.fleet)
             st.session_state.triage = TriageAgent()
@@ -38,7 +38,7 @@ def init_system():
             print(f"[Dashboard] System initialized at tick {st.session_state.env.tick}")
         except Exception as e:
             st.session_state.system_status = "offline"
-            print(f"[Dashboard] Failed to initialize: {e}")
+            import traceback; st.error(str(e)); traceback.print_exc()
     
     return (
         st.session_state.get('env', None),
@@ -59,39 +59,25 @@ def update_fleet_from_env():
         victim_snapshots = env.get_victim_snapshots()
         
         for d in drone_snapshots:
-            ds = DroneState(
-                drone_id=d['drone_id'],
-                battery_percent=d.get('battery_percent', d.get('battery', 100.0)),
-                mechanical_health=d.get('mechanical_health', 'ok'),
-                sensor_status=d.get('sensor_status', {}),
-                payload_kg=d.get('payload_kg', 0.0),
-                winch_status=d.get('winch_status', 'ready'),
-                position=d.get('position', (0.0, 0.0, 0.0)),
-                wind_speed_ms=d.get('wind_speed_ms', 0.0),
-                temperature_c=d.get('temperature_c', 20.0),
-                visibility_m=d.get('visibility_m', 1000.0),
-                current_mission=d.get('current_mission', None),
-                operational_status=d.get('operational_status', 'available')
-            )
-            fleet.add_or_update_drone(ds)
+            drone_id = d.get('drone_id', d.get('id', 'unknown'))
+            if drone_id in fleet.drones:
+                drone = fleet.drones[drone_id]
+                drone.battery = d.get('battery_percent', d.get('battery', 100.0))
+                drone.position = tuple(d.get('position', (0.0, 0.0, 0.0)))
+                status = d.get('operational_status', 'idle')
+                drone.status = status
+                drone.current_mission_id = d.get('current_mission', None)
         
         for v in victim_snapshots:
-            vs = VictimState(
-                victim_id=v['victim_id'],
-                position=v.get('position', (0.0, 0.0, 0.0)),
-                injury_severity=v.get('injury_severity', 'unknown'),
-                detected_by=v.get('detected_by', 'none'),
-                assigned_drone=v.get('assigned_drone', None),
-                mission_id=v.get('mission_id', None),
-                cooldown_until_tick=v.get('cooldown_until_tick', 0)
-            )
-            fleet.add_or_update_victim(vs)
+            victim_id = v.get('victim_id', v.get('id', 'unknown'))
+            fleet.update_victim(v)
         
         state_agent.ingest_raw_drone_data(drone_snapshots)
         
         completed_missions = env.get_completed_missions()
         for mission_id in completed_missions:
-            if fleet.complete_assignment(mission_id):
+            fleet.update_mission_status(mission_id, 'COMPLETED')
+            if True:
                 print(f"[Dashboard] Mission {mission_id} marked as completed in FleetState")
         
         create_new_assignments()
@@ -108,14 +94,15 @@ def create_new_assignments():
     coordinator = st.session_state.coordinator
     
     victim_objs = list(fleet.victims.values())
-    available_victims = [v for v in victim_objs if v.cooldown_until_tick <= env.tick and v.assigned_drone is None]
+    available_victims = [v for v in victim_objs if 0 <= env.tick and v.assigned_drone_id is None]
     
     if available_victims:
-        assignments = coordinator.assign_missions(available_victims, env.tick)
+        victim_dicts = [{"victim_id": v.id, "severity": str(v.severity), "score": v.triage_score, "position": list(v.position)} for v in available_victims]
+        assignments = coordinator.decide_dispatch(victim_dicts)
         for assignment in assignments:
-            if assignment.victim_id:
-                env.update_victim_assignment(assignment.victim_id, assignment.drone_id, assignment.mission_id)
-            env.update_drone_mission(assignment.drone_id, assignment.mission_id)
+            if assignment.get("victim_id"):
+                env.update_victim_assignment(assignment.get("victim_id"), assignment.get("drone_id"), assignment.get("mission_id", "m1"))
+            env.update_drone_mission(assignment.get("drone_id"), assignment.get("mission_id", "m1"))
 
 def load_ai_decisions() -> List[Dict[str, Any]]:
     """Load AI decisions from JSON file."""
@@ -135,18 +122,24 @@ def load_ai_decisions() -> List[Dict[str, Any]]:
 
 def get_battery_color(battery: float) -> str:
     """Return color for battery percentage."""
-    if battery > 50:
+    try:
+        b = float(str(battery).replace("%",""))
+    except: b = 0
+    if b > 50:
         return "🟢"
-    elif battery > 25:
+    elif b > 25:
         return "🟠"
     else:
         return "🔴"
 
-def get_battery_style(battery: float) -> str:
+def get_battery_style(battery) -> str:
     """Return color style for battery percentage."""
-    if battery > 50:
+    try:
+        b = float(str(battery).replace("%",""))
+    except: b = 0
+    if b > 50:
         return "color: green"
-    elif battery > 25:
+    elif b > 25:
         return "color: orange"
     else:
         return "color: red; font-weight: bold"
@@ -160,8 +153,8 @@ def calculate_victim_score(victim: VictimState) -> float:
         'minor': 25,
         'unknown': 10
     }
-    base_score = severity_scores.get(victim.injury_severity.lower() if hasattr(victim.injury_severity, 'lower') else 'unknown', 10)
-    if victim.assigned_drone is None:
+    base_score = severity_scores.get(str(victim.severity).lower() if hasattr(str(victim.severity), 'lower') else 'unknown', 10)
+    if victim.assigned_drone_id is None:
         base_score += 20
     return base_score
 
@@ -171,11 +164,6 @@ def main():
         page_icon="🚁",
         layout="wide"
     )
-    
-    # Auto-refresh every 2 seconds
-    if st.session_state.get('auto_refresh', True):
-        time.sleep(2)
-        st.rerun()
     
     env, fleet, state_agent, coordinator, triage = init_system()
     
@@ -203,11 +191,11 @@ def main():
     
     # Calculate metrics
     total_drones = len(fleet.drones) if fleet else 0
-    available_drones = len([d for d in fleet.drones.values() if d.operational_status == 'available']) if fleet else 0
-    active_missions = len([d for d in fleet.drones.values() if d.current_mission is not None]) if fleet else 0
+    available_drones = len([d for d in fleet.drones.values() if d.status == 'available']) if fleet else 0
+    active_missions = len([d for d in fleet.drones.values() if d.current_mission_id is not None]) if fleet else 0
     
     victims_detected = len(fleet.victims) if fleet else 0
-    victims_rescued = len([v for v in fleet.victims.values() if v.assigned_drone is None and v.cooldown_until_tick <= env.tick]) if fleet else 0
+    victims_rescued = len([v for v in fleet.victims.values() if v.assigned_drone_id is None and 0 <= env.tick]) if fleet else 0
     
     # Top metrics row
     st.subheader("📊 Fleet Overview")
@@ -235,13 +223,13 @@ def main():
             drone_data = []
             for drone_id, drone in fleet.drones.items():
                 drone_data.append({
-                    "Drone ID": drone.drone_id,
-                    "Status": drone.operational_status,
-                    "Battery": f"{drone.battery_percent:.1f}%",
-                    "Battery Raw": drone.battery_percent,
-                    "Mission": drone.current_mission if drone.current_mission else "None",
+                    "Drone ID": drone.id,
+                    "Status": drone.status,
+                    "Battery": f"{drone.battery:.1f}%",
+                    "Battery Raw": drone.battery,
+                    "Mission": drone.current_mission_id if drone.current_mission_id else "None",
                     "Position": f"({drone.position[0]:.1f}, {drone.position[1]:.1f})",
-                    "Health": drone.mechanical_health
+                    "Health": drone.status
                 })
             
             df = pd.DataFrame(drone_data)
@@ -263,13 +251,13 @@ def main():
         
         # Active missions list
         if fleet and fleet.drones:
-            active_mission_list = [(d_id, d) for d_id, d in fleet.drones.items() if d.current_mission is not None]
+            active_mission_list = [(d_id, d) for d_id, d in fleet.drones.items() if d.current_mission_id is not None]
             if active_mission_list:
                 for drone_id, drone in active_mission_list:
                     st.markdown(f"""
                     <div style='padding: 10px; margin: 5px 0; background-color: #1E3A5F; border-radius: 5px;'>
                         <strong>🛸 {drone_id}</strong><br>
-                        <span style='color: #AAAAAA;'>Mission: {drone.current_mission}
+                        <span style='color: #AAAAAA;'>Mission: {drone.current_mission_id}
                     """, unsafe_allow_html=True)
             else:
                 st.info("No active missions")
@@ -280,15 +268,15 @@ def main():
         st.subheader("⚠️ Security Alerts")
         
         # Check for low battery drones
-        low_battery_drones = [d for d in fleet.drones.values() if d.battery_percent <= 25] if fleet else []
+        low_battery_drones = [d for d in fleet.drones.values() if d.battery <= 25] if fleet else []
         # Check for drones with mechanical issues
-        unhealthy_drones = [d for d in fleet.drones.values() if d.mechanical_health != 'ok'] if fleet else []
+        unhealthy_drones = [d for d in fleet.drones.values() if d.status in ['unavailable_fault', 'fault']] if fleet else []
         
         alerts = []
         for drone in low_battery_drones:
-            alerts.append(f"⚠️ {drone.drone_id}: Low battery ({drone.battery_percent:.1f}%)")
+            alerts.append(f"⚠️ {drone.id}: Low battery ({drone.battery:.1f}%)")
         for drone in unhealthy_drones:
-            alerts.append(f"🔧 {drone.drone_id}: Mechanical issue - {drone.mechanical_health}")
+            alerts.append(f"🔧 {drone.id}: Mechanical issue - {drone.status}")
         
         if alerts:
             for alert in alerts:
@@ -306,13 +294,13 @@ def main():
         for victim_id, victim in fleet.victims.items():
             score = calculate_victim_score(victim)
             victim_data.append({
-                "Victim ID": victim.victim_id,
-                "Severity": victim.injury_severity,
+                "Victim ID": victim.id,
+                "Severity": str(victim.severity),
                 "Score": score,
                 "Position": f"({victim.position[0]:.1f}, {victim.position[1]:.1f}, {victim.position[2]:.1f})",
-                "Detected By": victim.detected_by,
-                "Assigned Drone": victim.assigned_drone if victim.assigned_drone else "Unassigned",
-                "Status": "Rescued" if victim.cooldown_until_tick <= env.tick and victim.assigned_drone is None else ("Assigned" if victim.assigned_drone else "Pending")
+                "Detected By": "unknown",
+                "Assigned Drone": victim.assigned_drone_id if victim.assigned_drone_id else "Unassigned",
+                "Status": "Rescued" if 0 <= env.tick and victim.assigned_drone_id is None else ("Assigned" if victim.assigned_drone_id else "Pending")
             })
         
         df_victims = pd.DataFrame(victim_data)
@@ -425,7 +413,7 @@ def main():
         if st.button("Reset Simulation"):
             try:
                 st.session_state.env = get_environment()
-                st.session_state.fleet = FleetState()
+                st.session_state.fleet = FleetState(['drone_1', 'drone_2', 'drone_3'])
                 update_fleet_from_env()
                 st.session_state.start_time = time.time()
                 st.rerun()
