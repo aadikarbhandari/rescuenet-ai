@@ -300,8 +300,8 @@ def main():
                 "Score": score,
                 "Position": f"({victim.position[0]:.1f}, {victim.position[1]:.1f}, {victim.position[2]:.1f})",
                 "Detected By": st.session_state.get('victim_raw', {}).get(victim.id, {}).get('detected_by', 'unknown'),
-                "Assigned Drone": victim.assigned_drone_id if victim.assigned_drone_id else "Unassigned",
-                "Status": ("Assigned" if victim.assigned_drone_id else victim.status.capitalize() if victim.status else "Discovered")
+                "Assigned Drone": st.session_state.get('victim_raw', {}).get(victim.id, {}).get('assigned_drone', victim.assigned_drone_id) or "Unassigned",
+                "Status": ("Assigned" if (st.session_state.get('victim_raw', {}).get(victim.id, {}).get('assigned_drone') or victim.assigned_drone_id) else victim.status.capitalize() if victim.status else "Discovered")
             })
         
         df_victims = pd.DataFrame(victim_data)
