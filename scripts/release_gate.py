@@ -31,6 +31,8 @@ CHECKS = [
 
 if os.getenv("RESCUENET_RUN_SOAK", "0") == "1":
     CHECKS.append(("soak_test", [sys.executable, "scripts/soak_test.py", "--ticks", "25"]))
+if os.getenv("RESCUENET_RUN_LOAD", "0") == "1":
+    CHECKS.append(("load_slo_gate", [sys.executable, "scripts/load_test.py", "--requests", "60"]))
 
 
 def run_check(name: str, command: List[str]) -> CheckResult:

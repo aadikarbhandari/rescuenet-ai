@@ -139,6 +139,7 @@ Production validation harness (Pass 6):
 - `python scripts/release_gate.py`
 - Runs compile checks, validation tests, and a 1-tick demo smoke test.
 - Optional soak gate: `RESCUENET_RUN_SOAK=1 python scripts/release_gate.py`
+- Optional load/SLO gate: `RESCUENET_RUN_LOAD=1 python scripts/release_gate.py`
 - CI workflow (`.github/workflows/release-gate.yml`) runs the same gate on pull requests and main/work pushes.
 - Pass 8 adds API/reliability integration tests under `tests/test_pass8_integration.py`.
 - Pass 9 adds MVP perception/routing tests under `tests/test_pass9_agent_mvp.py`.
@@ -147,6 +148,7 @@ Production validation harness (Pass 6):
 - Pass 12 adds API hardening tests under `tests/test_pass12_api_hardening.py`.
 - Pass 13 adds durable state backend tests under `tests/test_pass13_state_backend.py`.
 - Pass 14 adds durable task queue tests under `tests/test_pass14_task_queue.py`.
+- Pass 15 adds SLO helper tests under `tests/test_pass15_slo_gate.py`.
 
 ## Running the Dashboard
 
