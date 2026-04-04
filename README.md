@@ -18,6 +18,7 @@ The system enables real-time victim detection, injury triage, coordinated multi-
 - **Policy Guardrails** — Battery floor, reserve drone, and distance sanity checks before mission execution
 - **Reliability Layer** — Retry/backoff + circuit-breaker protection for external LLM API calls
 - **Autonomy Policy v2** — Critical override, low-battery auto-return posture, and optional supply-drone reserve policy
+- **Observability Metrics** — Runtime ops metrics (tick latency, LLM success/fallback rates, assignments) via API
 
 ## System Architecture
 
@@ -123,6 +124,9 @@ API docs available at: `http://localhost:8000/docs`
 If `RESCUENET_API_KEY` is set, REST endpoints (except health/docs) require:
 - `X-API-Key: <your_key>` header, or
 - `Authorization: Bearer <your_key>` header
+
+Ops reliability metrics endpoint:
+- `GET /ops/metrics`
 
 ## Running the Dashboard
 

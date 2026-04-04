@@ -19,6 +19,7 @@ from agents.security import SecurityAgent
 from agents.policy_engine import PolicyEngine, PolicyConfig
 from api.server import run_server_background, update_state
 from integration.manager import AdapterManager
+from utils.observability import OpsMetrics, structured_event
 
 
 def setup_logging(verbose: bool = False):
@@ -176,6 +177,7 @@ def main():
         )
     )
     logger.info("PolicyEngine initialized")
+    metrics = OpsMetrics()
     
     # Start API server in background
     if settings.api_enabled:
@@ -187,6 +189,7 @@ def main():
     
     try:
         for tick in range(1, settings.ticks + 1):
+            tick_start = time.time()
             # Step environment
             obs = env.step()
             
@@ -211,9 +214,15 @@ def main():
             
             # Triage: prioritize victims
             triage_results = triage_agent.prioritize_all(victim_snapshots)
+            metrics.llm_triage_success += sum(1 for r in triage_results if r.get("method") == "llm")
+            metrics.llm_triage_fallback += sum(1 for r in triage_results if r.get("method") != "llm")
             
             # Coordinator: decide dispatch
             assignments = coordinator.decide_dispatch(triage_results)
+            if assignments and coordinator.stats.get("llm_dispatches", 0) > 0:
+                metrics.llm_dispatch_success += 1
+            else:
+                metrics.llm_dispatch_fallback += 1
             assignments = policy_engine.filter_assignments(assignments, fleet)
             
             # Execute dispatch
@@ -222,6 +231,7 @@ def main():
                 mission_assignments = coordinator.execute_dispatch(assignments, env)
                 if mission_assignments:
                     new_assignments = len(mission_assignments)
+                    metrics.assignments_executed += new_assignments
             
             # Check for replanning needs
             coordinator.replan_if_needed(env)
@@ -229,6 +239,10 @@ def main():
             # Get completed missions for reporting
             completed = env.get_completed_missions()
             
+            tick_ms = (time.time() - tick_start) * 1000.0
+            metrics.record_tick(tick_ms)
+            logger.debug(structured_event("tick_completed", tick=tick, tick_ms=round(tick_ms, 2), assignments=new_assignments))
+
             # Update API state
             state_update = {
                 'drones': list(fleet.drones.values()),
@@ -238,6 +252,7 @@ def main():
                 'policy': {
                     'recharge_moves': recharge_moves,
                 },
+                'ops_metrics': metrics.to_dict(),
                 'stats': {
                     'tick': tick,
                     'available_drones': len(fleet.get_available_drones()),

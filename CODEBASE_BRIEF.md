@@ -43,6 +43,7 @@
 - `state/__init__.py`
 - `state/fleet_state.py`
 - `utils/__init__.py`
+- `utils/observability.py`
 - `utils/reliability.py`
 
 ## What each file does (concise)
@@ -88,4 +89,5 @@
 - `state/__init__.py` — Python module.
 - `state/fleet_state.py` — Python module. (classes: DroneStatus, MissionStatus, DroneState, VictimState, MissionAssignment)
 - `utils/__init__.py` — Shared utilities for reliability and operational helpers.
+- `utils/observability.py` — Operational observability helpers (metrics + structured events). (classes: OpsMetrics; functions: structured_event)
 - `utils/reliability.py` — Reliability utilities for external service calls. (classes: RetryPolicy, CircuitBreaker; functions: _get_breaker, resilient_post)

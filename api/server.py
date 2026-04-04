@@ -253,6 +253,13 @@ def get_analytics_summary() -> Dict[str, Any]:
     }
 
 
+@app.get("/ops/metrics")
+def get_ops_metrics() -> Dict[str, Any]:
+    """Operational reliability/performance metrics from runtime loop."""
+    with _state_lock:
+        return dict(_state.get("ops_metrics", {}))
+
+
 def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
     """Run the FastAPI server synchronously."""
     uvicorn.run(app, host=host, port=port, log_level="error")
