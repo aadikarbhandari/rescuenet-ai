@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from utils.persistence import RuntimeStore
 
 app = FastAPI(title="RescueNet AI API")
 
@@ -258,6 +259,13 @@ def get_ops_metrics() -> Dict[str, Any]:
     """Operational reliability/performance metrics from runtime loop."""
     with _state_lock:
         return dict(_state.get("ops_metrics", {}))
+
+
+@app.get("/ops/events")
+def get_ops_events(limit: int = 50) -> List[Dict[str, Any]]:
+    """Tail persisted runtime events from disk."""
+    store = RuntimeStore.from_path(os.getenv("RESCUENET_RUNTIME_DIR", "runtime_data"))
+    return store.tail_events(limit=max(1, min(limit, 500)))
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:

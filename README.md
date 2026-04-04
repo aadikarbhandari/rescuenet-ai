@@ -127,6 +127,7 @@ If `RESCUENET_API_KEY` is set, REST endpoints (except health/docs) require:
 
 Ops reliability metrics endpoint:
 - `GET /ops/metrics`
+- `GET /ops/events?limit=50` (persisted runtime events tail)
 
 Production validation harness (Pass 6):
 - `python scripts/release_gate.py`
@@ -134,6 +135,7 @@ Production validation harness (Pass 6):
 - CI workflow (`.github/workflows/release-gate.yml`) runs the same gate on pull requests and main/work pushes.
 - Pass 8 adds API/reliability integration tests under `tests/test_pass8_integration.py`.
 - Pass 9 adds MVP perception/routing tests under `tests/test_pass9_agent_mvp.py`.
+- Pass 10 adds persistence tests under `tests/test_pass10_persistence.py`.
 
 ## Running the Dashboard
 

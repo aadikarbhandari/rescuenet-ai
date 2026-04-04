@@ -20,6 +20,7 @@ from agents.policy_engine import PolicyEngine, PolicyConfig
 from api.server import run_server_background, update_state
 from integration.manager import AdapterManager
 from utils.observability import OpsMetrics, structured_event
+from utils.persistence import RuntimeStore
 
 
 def setup_logging(verbose: bool = False):
@@ -178,6 +179,10 @@ def main():
     )
     logger.info("PolicyEngine initialized")
     metrics = OpsMetrics()
+    runtime_store = RuntimeStore.from_path(os.getenv("RESCUENET_RUNTIME_DIR", "runtime_data"))
+    previous_snapshot = runtime_store.load_snapshot()
+    if previous_snapshot:
+        logger.info("Loaded previous runtime snapshot from disk")
     
     # Start API server in background
     if settings.api_enabled:
@@ -262,6 +267,18 @@ def main():
                 }
             }
             update_state(state_update)
+            try:
+                runtime_store.save_snapshot(state_update)
+                runtime_store.append_event(
+                    "tick_persisted",
+                    {
+                        "tick": tick,
+                        "assignments": new_assignments,
+                        "alerts": len(alerts),
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to persist runtime tick state: {e}")
             
             # Print summary
             print_tick_summary(tick, fleet, len([m for m in fleet.missions.values() 
