@@ -24,13 +24,16 @@ class MockDisasterEnv(Environment):
         }
     }
 
-    def __init__(self, seed: int = 42, initial_mode: str = "rescue"):
+    def __init__(self, seed: int = 42, initial_mode: str = "rescue", num_drones: int = 3, num_victims: int = 4):
         self.rng = random.Random(seed)
         self._tick = 0
+        self.num_drones = max(1, int(num_drones))
+        self.num_victims = max(1, int(num_victims))
         self._current_mode = initial_mode if initial_mode in self.MODES else "rescue"
         self._init_drones()
         self._init_targets()  # Initializes victims or checkpoints based on mode
         self._init_weather()
+        self._init_stations()
         # Track active missions: mission_id -> {"start_tick": int, "duration_ticks": int, "drone_id": str, "victim_id": str}
         self.active_missions = {}
         # Track missions that completed in the last step
@@ -42,51 +45,10 @@ class MockDisasterEnv(Environment):
         return self._tick
 
     def _init_drones(self):
-        """Create 3 drones with deterministic initial states."""
-        self.drones = [
-            {
-                "drone_id": "drone_1",
-                "battery_percent": 95.0,
-                "mechanical_health": "ok",
-                "sensor_status": {"rgb": "ok", "thermal": "ok", "lidar": "ok"},
-                "payload_kg": 0.0,
-                "winch_status": "ready",
-                "position": (10.0, 20.0, 5.0),
-                "wind_speed_ms": 2.5,
-                "temperature_c": 22.0,
-                "visibility_m": 1000.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            },
-            {
-                "drone_id": "drone_2",
-                "battery_percent": 80.0,
-                "mechanical_health": "degraded",
-                "sensor_status": {"rgb": "ok", "thermal": "degraded", "lidar": "ok"},
-                "payload_kg": 1.5,
-                "winch_status": "ready",
-                "position": (30.0, 40.0, 10.0),
-                "wind_speed_ms": 3.0,
-                "temperature_c": 21.5,
-                "visibility_m": 800.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            },
-            {
-                "drone_id": "drone_3",
-                "battery_percent": 60.0,
-                "mechanical_health": "ok",
-                "sensor_status": {"rgb": "ok", "thermal": "ok", "lidar": "degraded"},
-                "payload_kg": 0.8,
-                "winch_status": "fault",
-                "position": (50.0, 10.0, 8.0),
-                "wind_speed_ms": 4.2,
-                "temperature_c": 23.0,
-                "visibility_m": 1200.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            }
-        ]
+        """Create N drones with deterministic initial states."""
+        self.drones = []
+        for i in range(self.num_drones):
+            self.drones.append(self._make_drone(i + 1))
 
     def _init_targets(self):
         """Initialize targets (victims or checkpoints) based on current mode."""
@@ -96,75 +58,75 @@ class MockDisasterEnv(Environment):
             self._init_checkpoints()
 
     def _init_victims(self):
-        """Create 2‑4 victims with deterministic initial conditions."""
-        self.victims = [
-            {
-                "victim_id": "victim_1",
-                "is_confirmed": False,
-                "position": (15.0, 25.0, 0.0),
-                "injury_severity": "critical",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": False,
-                "bleeding": "severe",
-                "body_temperature_c": 34.5,
-                "accessibility": 0.3
-            },
-            {
-                "victim_id": "victim_2",
-                "is_confirmed": False,
-                "position": (35.0, 45.0, 0.0),
-                "injury_severity": "moderate",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "mild",
-                "body_temperature_c": 36.8,
-                "accessibility": 0.8
-            },
-            {
-                "victim_id": "victim_3",
-                "is_confirmed": False,
-                "position": (55.0, 15.0, 0.0),
-                "injury_severity": "severe",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "moderate",
-                "body_temperature_c": 38.2,
-                "accessibility": 0.5
-            },
-            {
-                "victim_id": "victim_4",
-                "is_confirmed": False,
-                "position": (25.0, 5.0, 0.0),
-                "injury_severity": "minor",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "none",
-                "body_temperature_c": 37.0,
-                "accessibility": 0.9
-            }
-        ]
+        """Create configurable victims with deterministic initial conditions."""
+        severity_cycle = ["critical", "severe", "moderate", "minor"]
+        bleeding_cycle = {"critical": "severe", "severe": "moderate", "moderate": "mild", "minor": "none"}
+        self.victims = []
+        for i in range(self.num_victims):
+            self.victims.append(self._make_victim(i + 1, severity_cycle, bleeding_cycle))
         # Alias for consistent access
         self.targets = self.victims
+
+    def _make_drone(self, idx: int) -> Dict[str, Any]:
+        """Create a deterministic drone record from an index (1-based)."""
+        i = idx - 1
+        sensor_quality = ["ok", "degraded", "ok"][i % 3]
+        return {
+            "drone_id": f"drone_{idx}",
+            "battery_percent": max(45.0, 98.0 - i * 3.0),
+            "mechanical_health": "degraded" if i % 7 == 3 else "ok",
+            "sensor_status": {"rgb": "ok", "thermal": sensor_quality, "lidar": "ok" if i % 5 else "degraded"},
+            "payload_kg": round((i % 4) * 0.6, 1),
+            "winch_status": "fault" if i % 11 == 7 else "ready",
+            "position": (10.0 + i * 8.0, 20.0 + ((i * 13) % 70), 5.0 + (i % 4)),
+            "wind_speed_ms": 2.5 + (i % 4) * 0.4,
+            "temperature_c": 22.0 + (i % 3) * 0.3,
+            "visibility_m": 1200.0 - (i % 5) * 80.0,
+            "current_mission": None,
+            "operational_status": "idle"
+        }
+
+    def _make_victim(self, idx: int, severity_cycle: List[str], bleeding_cycle: Dict[str, str]) -> Dict[str, Any]:
+        """Create a deterministic victim record from an index (1-based)."""
+        i = idx - 1
+        severity = severity_cycle[i % len(severity_cycle)]
+        return {
+            "victim_id": f"victim_{idx}",
+            "is_confirmed": False,
+            "position": (15.0 + (i * 11) % 90, 8.0 + (i * 17) % 90, 0.0),
+            "injury_severity": severity,
+            "detected_by": "none",
+            "first_detected_tick": 0,
+            "detection_confidence": 0.0,
+            "assigned_drone": None,
+            "mission_id": None,
+            "cooldown_until_tick": 0,
+            "conscious": severity not in ("critical",),
+            "bleeding": bleeding_cycle[severity],
+            "body_temperature_c": 34.5 if severity == "critical" else (38.0 if severity == "severe" else 36.9),
+            "accessibility": max(0.2, 0.95 - (i % 7) * 0.1)
+        }
+
+    def add_drone(self) -> str:
+        """Add one demo drone at runtime and return its id."""
+        next_id = len(self.drones) + 1
+        drone = self._make_drone(next_id)
+        self.drones.append(drone)
+        self.num_drones = len(self.drones)
+        return drone["drone_id"]
+
+    def add_victim(self) -> str:
+        """Add one rescue victim at runtime and return its id."""
+        if self._current_mode != "rescue":
+            raise RuntimeError("add_victim is only valid in rescue mode")
+        next_id = len(self.victims) + 1
+        severity_cycle = ["critical", "severe", "moderate", "minor"]
+        bleeding_cycle = {"critical": "severe", "severe": "moderate", "moderate": "mild", "minor": "none"}
+        victim = self._make_victim(next_id, severity_cycle, bleeding_cycle)
+        self.victims.append(victim)
+        self.targets = self.victims
+        self.num_victims = len(self.victims)
+        return victim["victim_id"]
 
     def _init_checkpoints(self):
         """Create infrastructure checkpoints for patrol mode."""
@@ -223,6 +185,14 @@ class MockDisasterEnv(Environment):
         self.visibility = 1000.0
         self.wind_speed = 3.0
         self.temperature = 22.0
+
+    def _init_stations(self):
+        """Initialize mock rescue/charging stations for dashboard and ops views."""
+        self.rescue_stations = [
+            {"name": "Station Alpha", "x": 0.0, "y": 0.0, "z": 0.0, "supplies": {"first_aid_kit": 40, "water": 80, "food": 60}, "charging_slots": 12},
+            {"name": "Station Beta", "x": 120.0, "y": 40.0, "z": 0.0, "supplies": {"first_aid_kit": 35, "water": 70, "food": 55}, "charging_slots": 10},
+            {"name": "Station Gamma", "x": -90.0, "y": 60.0, "z": 0.0, "supplies": {"first_aid_kit": 45, "water": 90, "food": 75}, "charging_slots": 14},
+        ]
 
     def get_current_mode(self) -> str:
         """Return the current operational mode."""
@@ -619,6 +589,9 @@ class MockDisasterEnv(Environment):
                 del self.active_missions[mission_id]
                 self.recently_completed_missions.append(mission_id)
 
+        # Refresh station occupancy based on charging drones at/near base.
+        self._update_station_occupancy()
+
         # Target condition updates
         for target in self.targets:
             if self._current_mode == "rescue":
@@ -704,3 +677,30 @@ class MockDisasterEnv(Environment):
                 "battery_level": d.get("battery_percent", 0.0),
             })
         return telemetry
+
+    def _update_station_occupancy(self):
+        """Refresh per-station drone presence for dashboard station panel."""
+        for stn in self.rescue_stations:
+            stn["drones_present"] = []
+        if not self.rescue_stations:
+            return
+        primary = self.rescue_stations[0]
+        for d in self.drones:
+            if d.get("operational_status") == "charging":
+                primary["drones_present"].append(d.get("drone_id"))
+
+    def get_station_status(self) -> List[Dict[str, Any]]:
+        """Return station status in a dashboard/API-friendly format."""
+        self._update_station_occupancy()
+        rows = []
+        for stn in self.rescue_stations:
+            rows.append({
+                "name": stn.get("name"),
+                "x": stn.get("x", 0.0),
+                "y": stn.get("y", 0.0),
+                "z": stn.get("z", 0.0),
+                "supplies": dict(stn.get("supplies", {})),
+                "charging_slots": int(stn.get("charging_slots", 0)),
+                "drones_present": list(stn.get("drones_present", [])),
+            })
+        return rows
