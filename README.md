@@ -19,6 +19,7 @@ The system enables real-time victim detection, injury triage, coordinated multi-
 - **Reliability Layer** — Retry/backoff + circuit-breaker protection for external LLM API calls
 - **Autonomy Policy v2** — Critical override, low-battery auto-return posture, and optional supply-drone reserve policy
 - **Observability Metrics** — Runtime ops metrics (tick latency, LLM success/fallback rates, assignments) via API
+- **Latency Percentiles** — Ops metrics now include p50/p95/max tick latency for quick performance tracking
 
 ## System Architecture
 
@@ -132,10 +133,12 @@ Ops reliability metrics endpoint:
 Production validation harness (Pass 6):
 - `python scripts/release_gate.py`
 - Runs compile checks, validation tests, and a 1-tick demo smoke test.
+- Optional soak gate: `RESCUENET_RUN_SOAK=1 python scripts/release_gate.py`
 - CI workflow (`.github/workflows/release-gate.yml`) runs the same gate on pull requests and main/work pushes.
 - Pass 8 adds API/reliability integration tests under `tests/test_pass8_integration.py`.
 - Pass 9 adds MVP perception/routing tests under `tests/test_pass9_agent_mvp.py`.
 - Pass 10 adds persistence tests under `tests/test_pass10_persistence.py`.
+- Pass 11 adds observability percentile tests under `tests/test_pass11_observability.py`.
 
 ## Running the Dashboard
 

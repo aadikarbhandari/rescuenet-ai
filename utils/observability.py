@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Any, List
 import json
+import math
 
 
 def structured_event(event_type: str, **fields: Any) -> str:
@@ -38,6 +39,24 @@ class OpsMetrics:
     def avg_tick_ms(self) -> float:
         return 0.0 if self.ticks == 0 else self.total_tick_ms / self.ticks
 
+    def p50_tick_ms(self) -> float:
+        return self._percentile(50)
+
+    def p95_tick_ms(self) -> float:
+        return self._percentile(95)
+
+    def _percentile(self, p: int) -> float:
+        if not self.recent_tick_ms:
+            return 0.0
+        values = sorted(self.recent_tick_ms)
+        rank = (p / 100.0) * (len(values) - 1)
+        lo = int(math.floor(rank))
+        hi = int(math.ceil(rank))
+        if lo == hi:
+            return float(values[lo])
+        frac = rank - lo
+        return float(values[lo] + (values[hi] - values[lo]) * frac)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ticks": self.ticks,
@@ -47,6 +66,8 @@ class OpsMetrics:
             "llm_dispatch_fallback": self.llm_dispatch_fallback,
             "assignments_executed": self.assignments_executed,
             "avg_tick_ms": round(self.avg_tick_ms(), 2),
+            "p50_tick_ms": round(self.p50_tick_ms(), 2),
+            "p95_tick_ms": round(self.p95_tick_ms(), 2),
+            "max_tick_ms": round(max(self.recent_tick_ms), 2) if self.recent_tick_ms else 0.0,
             "recent_tick_ms": [round(x, 2) for x in self.recent_tick_ms],
         }
-

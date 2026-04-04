@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from dataclasses import dataclass
 from typing import List
 
@@ -27,6 +28,9 @@ CHECKS = [
     ("pass6_validation_tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"]),
     ("demo_smoke", [sys.executable, "main.py", "--mode", "demo", "--ticks", "1"]),
 ]
+
+if os.getenv("RESCUENET_RUN_SOAK", "0") == "1":
+    CHECKS.append(("soak_test", [sys.executable, "scripts/soak_test.py", "--ticks", "25"]))
 
 
 def run_check(name: str, command: List[str]) -> CheckResult:
