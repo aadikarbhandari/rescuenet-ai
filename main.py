@@ -122,6 +122,10 @@ def main():
                        choices=['demo', 'sim', 'airsim'], help='Runtime mode')
     parser.add_argument('--ticks', type=int, default=20, 
                        help='Number of simulation ticks')
+    parser.add_argument('--mock-drones', type=int, default=None,
+                       help='Demo mode only: number of simulated drones')
+    parser.add_argument('--mock-victims', type=int, default=None,
+                       help='Demo mode only: number of simulated victims')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
     parser.add_argument('--api-port', type=int, default=8000,
@@ -137,6 +141,10 @@ def main():
     settings = load_settings()
     settings.ticks = args.ticks
     settings.mode = RuntimeMode(args.mode.lower()) if args.mode.lower() in ("demo", "sim", "airsim") else RuntimeMode.DEMO
+    if args.mock_drones is not None:
+        settings.mock_num_drones = max(1, int(args.mock_drones))
+    if args.mock_victims is not None:
+        settings.mock_num_victims = max(1, int(args.mock_victims))
     settings.api_enabled = True
     settings.api_port = args.api_port
     warn_if_llm_not_configured(logger)
@@ -152,8 +160,9 @@ def main():
         logger.error(f"Failed to create environment: {e}")
         return 1
     
-    # Initialize fleet state
-    drone_names = getattr(settings, 'drone_names', ['drone_1', 'drone_2', 'drone_3'])
+    # Initialize fleet state from environment telemetry to keep demo/airsim parity
+    initial_drone_ids = [d.get("drone_id") for d in env.get_drone_snapshots() if d.get("drone_id")]
+    drone_names = initial_drone_ids if initial_drone_ids else getattr(settings, 'drone_names', ['drone_1', 'drone_2', 'drone_3'])
     fleet = FleetState(drone_names=drone_names)
     logger.info("FleetState initialized")
     

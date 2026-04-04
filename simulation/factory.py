@@ -70,7 +70,11 @@ class SimulationFactory:
             f"Creating demo environment with seed={settings.mock_seed}"
         )
         print("[Factory] Creating demo environment (no AirSim required)...")
-        return MockDisasterEnv(seed=settings.mock_seed)
+        return MockDisasterEnv(
+            seed=settings.mock_seed,
+            num_drones=getattr(settings, "mock_num_drones", 3),
+            num_victims=getattr(settings, "mock_num_victims", 4),
+        )
     
     @staticmethod
     def _create_airsim(settings: Settings) -> Environment:

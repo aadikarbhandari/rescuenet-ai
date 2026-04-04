@@ -114,6 +114,8 @@ Demo mode uses a mock disaster environment — no AirSim or Unreal Engine requir
 
 ```bash
 python main.py --mode demo --ticks 200
+# configurable scale example:
+# python main.py --mode demo --mock-drones 30 --mock-victims 7 --ticks 200
 ```
 
 What happens:
@@ -122,6 +124,7 @@ What happens:
 - Full mission lifecycle runs automatically across all ticks
 - Security agent monitors for GPS spoofing and signal jamming
 - FastAPI server starts on port 8000
+- You can scale scenario size in demo mode with `--mock-drones` / `--mock-victims`
 
 API docs available at: `http://localhost:8000/docs`
 

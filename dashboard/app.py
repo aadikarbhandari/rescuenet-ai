@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 # Import existing backend modules
 from simulation.factory import get_environment
+from simulation.mock_env import MockDisasterEnv
 from state.fleet_state import FleetState, DroneState, VictimState, DroneStatus, MissionStatus
 from agents.state_awareness import StateAwarenessAgent
 from agents.coordinator import CoordinatorAgent
@@ -38,6 +39,8 @@ def init_system():
             st.session_state.auto_refresh = True
             st.session_state.refresh_interval = 2.0
             st.session_state.system_status = "running"
+            st.session_state.demo_num_drones = st.session_state.get('demo_num_drones', len(drone_ids))
+            st.session_state.demo_num_victims = st.session_state.get('demo_num_victims', 4)
             
             update_fleet_from_env()
             
@@ -505,6 +508,24 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Controls")
+        is_demo = runtime_mode == "DEMO"
+        if is_demo:
+            st.subheader("🧪 Demo Scenario")
+            st.session_state.demo_num_drones = st.number_input(
+                "Demo drones",
+                min_value=1,
+                max_value=100,
+                value=int(st.session_state.get('demo_num_drones', len(fleet.drones) if fleet else 3)),
+                step=1,
+            )
+            st.session_state.demo_num_victims = st.number_input(
+                "Demo victims",
+                min_value=1,
+                max_value=200,
+                value=int(st.session_state.get('demo_num_victims', len(fleet.victims) if fleet else 4)),
+                step=1,
+            )
+            st.caption("Use Reset Simulation to apply these demo counts.")
         
         # Refresh rate slider
         refresh_rate = st.slider("Refresh Rate (seconds)", min_value=1, max_value=10, value=2, help="Auto-refresh interval")
@@ -540,8 +561,16 @@ def main():
         
         if st.button("Reset Simulation"):
             try:
-                st.session_state.env = get_environment()
-                st.session_state.fleet = FleetState(['drone_1', 'drone_2', 'drone_3'])
+                if runtime_mode == "DEMO":
+                    st.session_state.env = MockDisasterEnv(
+                        num_drones=int(st.session_state.get('demo_num_drones', 3)),
+                        num_victims=int(st.session_state.get('demo_num_victims', 4)),
+                    )
+                else:
+                    st.session_state.env = get_environment()
+                reset_drones = st.session_state.env.get_drone_snapshots()
+                reset_ids = [d.get('drone_id') or d.get('id') for d in reset_drones if (d.get('drone_id') or d.get('id'))]
+                st.session_state.fleet = FleetState(reset_ids if reset_ids else ['drone_1', 'drone_2', 'drone_3'])
                 update_fleet_from_env()
                 st.session_state.start_time = time.time()
                 st.rerun()
