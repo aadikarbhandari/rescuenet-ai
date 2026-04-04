@@ -42,6 +42,9 @@ def _station_panel_data(env) -> List[Dict[str, Any]]:
                 remaining = sum(v for v in supplies.values() if isinstance(v, (int, float)))
                 rows.append({
                     "Station": stn.get("name", "Station"),
+                    "First Aid Kits": int(supplies.get("first_aid_kit", 0)),
+                    "Water": int(supplies.get("water", 0)),
+                    "Food": int(supplies.get("food", 0)),
                     "Supplies Remaining": int(remaining),
                     "Charging Slots": int(stn.get("charging_slots", 0)),
                     "Drones Present": len(stn.get("drones_present", [])),
@@ -51,9 +54,9 @@ def _station_panel_data(env) -> List[Dict[str, Any]]:
         except Exception:
             pass
     return [
-        {"Station": "Station Alpha", "Supplies Remaining": 85, "Charging Slots": 4, "Drones Present": 2},
-        {"Station": "Station Beta", "Supplies Remaining": 60, "Charging Slots": 2, "Drones Present": 3},
-        {"Station": "Station Gamma", "Supplies Remaining": 92, "Charging Slots": 6, "Drones Present": 1},
+        {"Station": "Station Alpha", "First Aid Kits": 40, "Water": 80, "Food": 60, "Supplies Remaining": 180, "Charging Slots": 4, "Drones Present": 2},
+        {"Station": "Station Beta", "First Aid Kits": 35, "Water": 70, "Food": 55, "Supplies Remaining": 160, "Charging Slots": 2, "Drones Present": 3},
+        {"Station": "Station Gamma", "First Aid Kits": 45, "Water": 90, "Food": 75, "Supplies Remaining": 210, "Charging Slots": 6, "Drones Present": 1},
     ]
 
 # Initialize the environment and agents in session state
@@ -129,7 +132,7 @@ def update_fleet_from_env():
                 "position": v.get("position", (0.0, 0.0, 0.0)),
                 "severity": sev_map.get(injury, 50),
                 "triage_score": sev_map.get(injury, 50),
-                "status": "assigned" if v.get("assigned_drone") else "discovered",
+                "status": v.get("status", "assigned" if v.get("assigned_drone") else "discovered"),
                 "assigned_drone_id": v.get("assigned_drone"),
                 "assigned_mission_id": v.get("mission_id"),
             }
@@ -578,6 +581,40 @@ def main():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error applying scenario: {e}")
+            st.subheader("🏭 Stations")
+            station_names = [r.get("Station") for r in _station_panel_data(st.session_state.env)]
+            selected_station = st.selectbox("Station", options=station_names, index=0 if station_names else None)
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("➕ Add Station"):
+                    try:
+                        if hasattr(st.session_state.env, "add_station"):
+                            st.session_state.env.add_station()
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error adding station: {e}")
+            with c2:
+                if st.button("➖ Remove Station"):
+                    try:
+                        if hasattr(st.session_state.env, "remove_station") and selected_station:
+                            removed = st.session_state.env.remove_station(selected_station)
+                            if not removed:
+                                st.warning("Keep at least one station.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error removing station: {e}")
+            sel_row = next((r for r in _station_panel_data(st.session_state.env) if r.get("Station") == selected_station), None)
+            if sel_row:
+                kit = st.number_input("First aid kits", min_value=0, max_value=500, value=int(sel_row.get("First Aid Kits", 0)), step=1)
+                water = st.number_input("Emergency water", min_value=0, max_value=1000, value=int(sel_row.get("Water", 0)), step=1)
+                food = st.number_input("Emergency food", min_value=0, max_value=1000, value=int(sel_row.get("Food", 0)), step=1)
+                if st.button("Update Supplies"):
+                    try:
+                        if hasattr(st.session_state.env, "update_station_supplies") and selected_station:
+                            st.session_state.env.update_station_supplies(selected_station, int(kit), int(water), int(food))
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Error updating supplies: {e}")
         
         # Refresh rate slider
         refresh_rate = st.slider("Refresh Rate (seconds)", min_value=1, max_value=10, value=2, help="Auto-refresh interval")

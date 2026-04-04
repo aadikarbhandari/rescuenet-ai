@@ -93,6 +93,7 @@ class MockDisasterEnv(Environment):
         return {
             "victim_id": f"victim_{idx}",
             "is_confirmed": False,
+            "status": "discovered",
             "position": (15.0 + (i * 11) % 90, 8.0 + (i * 17) % 90, 0.0),
             "injury_severity": severity,
             "detected_by": "none",
@@ -127,6 +128,41 @@ class MockDisasterEnv(Environment):
         self.targets = self.victims
         self.num_victims = len(self.victims)
         return victim["victim_id"]
+
+    def add_station(self, name: str = None) -> str:
+        """Add a charging/supply station at runtime and return station name."""
+        idx = len(self.rescue_stations) + 1
+        station_name = name or f"Station_{idx}"
+        self.rescue_stations.append({
+            "name": station_name,
+            "x": float((idx * 40) % 200 - 100),
+            "y": float((idx * 25) % 160 - 80),
+            "z": 0.0,
+            "supplies": {"first_aid_kit": 30, "water": 50, "food": 40},
+            "charging_slots": 8,
+            "drones_present": [],
+        })
+        return station_name
+
+    def remove_station(self, name: str) -> bool:
+        """Remove station by name; keeps at least one station available."""
+        if len(self.rescue_stations) <= 1:
+            return False
+        before = len(self.rescue_stations)
+        self.rescue_stations = [s for s in self.rescue_stations if s.get("name") != name]
+        return len(self.rescue_stations) < before
+
+    def update_station_supplies(self, name: str, first_aid_kit: int, water: int, food: int) -> bool:
+        """Update station supply inventory by name."""
+        for stn in self.rescue_stations:
+            if stn.get("name") == name:
+                stn["supplies"] = {
+                    "first_aid_kit": max(0, int(first_aid_kit)),
+                    "water": max(0, int(water)),
+                    "food": max(0, int(food)),
+                }
+                return True
+        return False
 
     def _init_checkpoints(self):
         """Create infrastructure checkpoints for patrol mode."""
@@ -577,11 +613,15 @@ class MockDisasterEnv(Environment):
                     if target_id == mission["target_id"]:
                         target["assigned_drone"] = None
                         target["mission_id"] = None
-                        # Set cooldown to prevent immediate reassignment (2 ticks cooldown)
+                        # Set cooldown and mark outcome
                         target["cooldown_until_tick"] = self._tick + 2
+                        if self._current_mode == "rescue":
+                            target["status"] = "rescued"
+                            target["rescued_tick"] = self._tick
+                            self._consume_station_supplies()
                         
                         if self._current_mode == "rescue":
-                            print(f"[MockEnv] Victim {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
+                            print(f"[MockEnv] Victim {target_id} rescued by mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
                         else:
                             print(f"[MockEnv] Checkpoint {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
             # Remove from active missions tracking and add to recently completed
@@ -622,6 +662,8 @@ class MockDisasterEnv(Environment):
             if target_id == victim_id:
                 target["assigned_drone"] = drone_id
                 target["mission_id"] = mission_id
+                if self._current_mode == "rescue":
+                    target["status"] = "assigned"
                 print(f"[MockEnv] Target {target_id} assigned to drone {drone_id} (mission {mission_id})")
                 break
     
@@ -677,6 +719,14 @@ class MockDisasterEnv(Environment):
                 "battery_level": d.get("battery_percent", 0.0),
             })
         return telemetry
+
+    def _consume_station_supplies(self):
+        """Consume basic rescue supplies from primary station when victim is rescued."""
+        if not self.rescue_stations:
+            return
+        supply = self.rescue_stations[0].setdefault("supplies", {"first_aid_kit": 0, "water": 0, "food": 0})
+        for key in ("first_aid_kit", "water", "food"):
+            supply[key] = max(0, int(supply.get(key, 0)) - 1)
 
     def _update_station_occupancy(self):
         """Refresh per-station drone presence for dashboard station panel."""

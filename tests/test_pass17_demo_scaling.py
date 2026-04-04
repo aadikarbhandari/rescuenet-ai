@@ -49,6 +49,34 @@ class TestDemoScaling(unittest.TestCase):
         self.assertTrue(len(status) >= 1)
         self.assertIn("drone_1", status[0].get("drones_present", []))
 
+    def test_station_add_remove_and_supply_update(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        added = env.add_station("Station Delta")
+        self.assertEqual(added, "Station Delta")
+        self.assertTrue(env.update_station_supplies("Station Delta", 10, 20, 30))
+        stations = env.get_station_status()
+        delta = next(s for s in stations if s["name"] == "Station Delta")
+        self.assertEqual(delta["supplies"]["first_aid_kit"], 10)
+        self.assertEqual(delta["supplies"]["water"], 20)
+        self.assertEqual(delta["supplies"]["food"], 30)
+        self.assertTrue(env.remove_station("Station Delta"))
+
+    def test_victim_marked_rescued_on_mission_completion(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        before = env.get_station_status()[0]["supplies"]["first_aid_kit"]
+        mission_id = "mission_test_1"
+        victim_id = env.victims[0]["victim_id"]
+        env.update_victim_assignment(victim_id, "drone_1", mission_id)
+        env.update_drone_mission("drone_1", mission_id)
+        env.drones[0]["position"] = env.victims[0]["position"]
+        env.drones[0]["operational_status"] = "on_scene"
+        env.active_missions[mission_id] = {"start_tick": env.tick - 5, "duration_ticks": 1, "drone_id": "drone_1", "target_id": victim_id}
+        env.step()
+        victim = next(v for v in env.victims if v["victim_id"] == victim_id)
+        self.assertEqual(victim.get("status"), "rescued")
+        after = env.get_station_status()[0]["supplies"]["first_aid_kit"]
+        self.assertLessEqual(after, before)
+
 
 if __name__ == "__main__":
     unittest.main()

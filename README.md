@@ -166,10 +166,12 @@ Dashboard: `http://localhost:8501`
 **Dashboard features:**
 - **Fleet Overview** — Total drones, available count, active missions, victims detected/rescued
 - **Drone Fleet Status** — Live battery levels, positions, mission assignments, health status
-- **Active Missions** — Per-drone mission tracking with target victim
+- **Active Missions** — Scalable mission table (preview + full-list expander for large fleets)
 - **Victim Triage Panel** — Severity scoring, detected-by drone, assigned drone, status (Discovered/Assigned)
 - **AI Decisions Log** — Real-time log of every LLM dispatch decision with timestamps and full assignment details
 - **Security Alerts** — GPS spoofing and signal jamming detections
+- **Demo Controls** — Apply scenario size instantly, add drones/victims, and manage station supplies
+- **Rescue Stations Panel** — Live station inventory (first aid/water/food), charging slots, drones present
 - **Manual Controls** — Step simulation tick-by-tick or reset
 
 To run the dashboard with SSH tunneling from a remote server:
