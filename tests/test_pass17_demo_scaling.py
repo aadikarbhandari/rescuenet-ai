@@ -77,6 +77,20 @@ class TestDemoScaling(unittest.TestCase):
         after = env.get_station_status()[0]["supplies"]["first_aid_kit"]
         self.assertLessEqual(after, before)
 
+    def test_failure_mode_switch_and_recovery_dispatch(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        self.assertTrue(env.set_failure_handling_mode("recovery_drone"))
+        env.drones[0]["mechanical_health"] = "critical"
+        env.step()
+        self.assertIn(env.drones[0]["drone_id"], env.recovery_tasks)
+
+    def test_failure_mode_human_recovery(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        self.assertTrue(env.set_failure_handling_mode("human_recovery"))
+        env.drones[0]["mechanical_health"] = "critical"
+        env.step()
+        self.assertEqual(env.drones[0]["operational_status"], "unavailable_fault")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -172,6 +172,7 @@ Dashboard: `http://localhost:8501`
 - **Security Alerts** — GPS spoofing and signal jamming detections
 - **Demo Controls** — Apply scenario size instantly, add drones/victims, and manage station supplies
 - **Rescue Stations Panel** — Live station inventory (first aid/water/food), charging slots, drones present
+- **Fault Handling Controls** — Choose demo strategy for faulted drones (`auto_return_if_flyable`, `human_recovery`, `recovery_drone`)
 - **Manual Controls** — Step simulation tick-by-tick or reset
 
 To run the dashboard with SSH tunneling from a remote server:

@@ -565,6 +565,16 @@ def main():
                 value=prev_victims,
                 step=1,
             )
+            fault_mode_options = ["auto_return_if_flyable", "human_recovery", "recovery_drone"]
+            current_mode = getattr(st.session_state.env, "get_failure_handling_mode", lambda: "auto_return_if_flyable")()
+            selected_fault_mode = st.selectbox(
+                "Fault handling mode",
+                options=fault_mode_options,
+                index=fault_mode_options.index(current_mode) if current_mode in fault_mode_options else 0,
+                help="How demo handles mechanical-fault drones."
+            )
+            if hasattr(st.session_state.env, "set_failure_handling_mode"):
+                st.session_state.env.set_failure_handling_mode(selected_fault_mode)
             st.caption("Counts apply instantly with 'Apply Scenario'. Reset also applies and clears mission state.")
             if st.button("Apply Scenario", type="primary"):
                 try:
@@ -615,6 +625,10 @@ def main():
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error updating supplies: {e}")
+            recovery_tasks = getattr(st.session_state.env, "recovery_tasks", {})
+            if recovery_tasks:
+                st.markdown("**Recovery Ops**")
+                st.json(recovery_tasks)
         
         # Refresh rate slider
         refresh_rate = st.slider("Refresh Rate (seconds)", min_value=1, max_value=10, value=2, help="Auto-refresh interval")

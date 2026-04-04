@@ -23,6 +23,11 @@ class MockDisasterEnv(Environment):
             "spawn_probability": 0.2,
         }
     }
+    FAILURE_HANDLING_MODES = {
+        "auto_return_if_flyable",
+        "human_recovery",
+        "recovery_drone",
+    }
 
     def __init__(self, seed: int = 42, initial_mode: str = "rescue", num_drones: int = 3, num_victims: int = 4):
         self.rng = random.Random(seed)
@@ -38,6 +43,8 @@ class MockDisasterEnv(Environment):
         self.active_missions = {}
         # Track missions that completed in the last step
         self.recently_completed_missions = []
+        self.failure_handling_mode = "auto_return_if_flyable"
+        self.recovery_tasks: Dict[str, Dict[str, Any]] = {}
     
     @property
     def tick(self) -> int:
@@ -143,6 +150,30 @@ class MockDisasterEnv(Environment):
             "drones_present": [],
         })
         return station_name
+
+    def set_failure_handling_mode(self, mode: str) -> bool:
+        """Set how demo handles mechanical-fault drones."""
+        mode = (mode or "").strip().lower()
+        if mode not in self.FAILURE_HANDLING_MODES:
+            return False
+        self.failure_handling_mode = mode
+        return True
+
+    def get_failure_handling_mode(self) -> str:
+        return self.failure_handling_mode
+
+    def _assign_recovery_drone(self, faulty_drone_id: str) -> bool:
+        """Assign an available drone to recover a faulted drone."""
+        for d in self.drones:
+            if d.get("drone_id") == faulty_drone_id:
+                continue
+            if d.get("operational_status") == "idle" and d.get("battery_percent", 0.0) > 35.0:
+                d["operational_status"] = "recovery_ops"
+                d["recovery_target"] = faulty_drone_id
+                self.recovery_tasks[faulty_drone_id] = {"helper": d["drone_id"], "start_tick": self._tick, "duration_ticks": 2}
+                print(f"[MockEnv] Recovery drone {d['drone_id']} dispatched to assist {faulty_drone_id}")
+                return True
+        return False
 
     def remove_station(self, name: str) -> bool:
         """Remove station by name; keeps at least one station available."""
@@ -425,10 +456,17 @@ class MockDisasterEnv(Environment):
             
             # Check for hardware faults - triggers unavailable_fault
             if d["mechanical_health"] == "critical" and current_status != "unavailable_fault":
-                d["operational_status"] = "unavailable_fault"
                 d["current_mission"] = None  # Abort any current mission
-                print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical, marked as unavailable_fault")
-                current_status = "unavailable_fault"
+                if self.failure_handling_mode == "auto_return_if_flyable" and d["battery_percent"] > 15.0:
+                    d["operational_status"] = "returning_to_base"
+                    print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical; auto-returning to base")
+                    current_status = "returning_to_base"
+                else:
+                    d["operational_status"] = "unavailable_fault"
+                    print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical, marked as unavailable_fault")
+                    if self.failure_handling_mode == "recovery_drone":
+                        self._assign_recovery_drone(d["drone_id"])
+                    current_status = "unavailable_fault"
             
             # Handle different operational states
             if current_status == "idle":
@@ -556,14 +594,35 @@ class MockDisasterEnv(Environment):
                     d["operational_status"] = "idle"
                     print(f"[MockEnv] Drone {d['drone_id']} fully charged ({d['battery_percent']:.1f}%), now idle")
             
+            elif current_status == "recovery_ops":
+                # Recovery helper drone is assisting a faulted drone.
+                d["battery_percent"] = max(0.0, d["battery_percent"] - 0.8)
+            
             elif current_status == "unavailable_fault":
-                # Recover after 3 ticks
-                if "fault_since" not in d:
+                # Fault recovery strategy depends on selected handling mode.
+                if "fault_since" not in d or d.get("fault_since") is None:
                     d["fault_since"] = self._tick
-                elif d.get('fault_since') is not None and self._tick - d['fault_since'] >= 3:
+                wait_ticks = 3
+                if self.failure_handling_mode == "human_recovery":
+                    wait_ticks = 6
+                elif self.failure_handling_mode == "recovery_drone":
+                    task = self.recovery_tasks.get(d["drone_id"])
+                    if task and (self._tick - task.get("start_tick", self._tick)) >= task.get("duration_ticks", 2):
+                        helper = task.get("helper")
+                        for hd in self.drones:
+                            if hd.get("drone_id") == helper:
+                                hd["operational_status"] = "idle"
+                                hd["recovery_target"] = None
+                                break
+                        d["operational_status"] = "returning_to_base"
+                        d["fault_since"] = None
+                        del self.recovery_tasks[d["drone_id"]]
+                        print(f"[MockEnv] Recovery complete for {d['drone_id']}; returning to base")
+                        continue
+                if d.get('fault_since') is not None and self._tick - d['fault_since'] >= wait_ticks:
                     d["operational_status"] = "idle"
                     d["fault_since"] = None
-                    print(f"[MockEnv] Drone {d['drone_id']} recovered from fault, now idle")
+                    print(f"[MockEnv] Drone {d['drone_id']} recovered from fault via {self.failure_handling_mode}, now idle")
             
             # Base battery drain (applies to all operational states except charging and unavailable_fault)
             if current_status not in ["charging", "unavailable_fault"]:
