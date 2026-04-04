@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import math
 import os
 import json
+import ast
 import logging
 import time
 import requests
@@ -86,7 +87,7 @@ CONTEXT:
 Based on the victim data and context, provide a triage assessment in JSON format with the following fields:
 - "score": integer 0-100 (higher = more urgent)
 - "priority": "critical" | "high" | "medium" | "low"
-- "reasoning": detailed explanation of the scoring decision
+- "reasoning": one short sentence (max 20 words)
 - "recommended_action": "extract" | "deliver_supplies" | "scout" | "monitor"
 
 Consider these factors:
@@ -97,12 +98,16 @@ Consider these factors:
 5. Accessibility of location (easier access = higher effective priority for extraction)
 6. Available resources and current rescue queue
 
-Return ONLY valid JSON, no additional text."""
+Return ONLY valid JSON object, no markdown/code fences/no extra text."""
         return prompt
 
-    def _parse_llm_response(self, response_text: str) -> Optional[Dict[str, Any]]:
+    def _parse_llm_response(self, response_text: Optional[str]) -> Optional[Dict[str, Any]]:
         """Parse the LLM response JSON."""
         try:
+            if not response_text:
+                logger.warning("LLM response content is empty; using fallback triage.")
+                return None
+
             # Try to find JSON in the response
             response_text = response_text.strip()
             if response_text.startswith("```json"):
@@ -112,8 +117,34 @@ Return ONLY valid JSON, no additional text."""
             if response_text.endswith("```"):
                 response_text = response_text[:-3]
             response_text = response_text.strip()
+
+            # Extract the first JSON object if model returned extra text
+            start_idx = response_text.find("{")
+            end_idx = response_text.rfind("}")
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                response_text = response_text[start_idx:end_idx + 1]
             
-            result = json.loads(response_text)
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # Some providers return python-style dict strings with single quotes.
+                result = ast.literal_eval(response_text)
+
+            if isinstance(result, list) and result:
+                result = result[0]
+            if not isinstance(result, dict):
+                logger.warning("LLM triage response is not a JSON object; using fallback triage.")
+                return None
+
+            # Normalize common alias keys from different providers/models
+            if 'score' not in result:
+                result['score'] = result.get('triage_score', result.get('urgency_score'))
+            if 'priority' not in result:
+                result['priority'] = result.get('severity', result.get('triage_priority'))
+            if 'recommended_action' not in result:
+                result['recommended_action'] = result.get('action', result.get('recommended_next_step'))
+            if 'reasoning' not in result:
+                result['reasoning'] = result.get('reason', result.get('explanation', ''))
             
             # Validate required fields
             required_fields = ['score', 'priority', 'reasoning', 'recommended_action']
@@ -141,12 +172,12 @@ Return ONLY valid JSON, no additional text."""
             
             return result
             
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM response as JSON: {e}")
+        except (json.JSONDecodeError, SyntaxError, ValueError) as e:
+            logger.warning(f"Failed to parse LLM response as JSON: {e}")
             logger.debug(f"Response text: {response_text[:500]}")
             return None
         except Exception as e:
-            logger.error(f"Error parsing LLM response: {e}")
+            logger.warning(f"Error parsing LLM response: {e}")
             return None
 
     def _call_deepseek(self, prompt: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
@@ -169,6 +200,22 @@ Return ONLY valid JSON, no additional text."""
             "Authorization": f"Bearer {self._api_key}"
         }
         
+        json_schema = {
+            "name": "triage_assessment",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "score": {"type": "number"},
+                    "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    "reasoning": {"type": "string"},
+                    "recommended_action": {"type": "string", "enum": ["extract", "deliver_supplies", "scout", "monitor"]},
+                },
+                "required": ["score", "priority", "reasoning", "recommended_action"],
+                "additionalProperties": True
+            },
+            "strict": True
+        }
+
         payload = {
             "model": self._model,
             "messages": [
@@ -176,7 +223,8 @@ Return ONLY valid JSON, no additional text."""
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.3,  # Low temperature for consistent triage decisions
-            "max_tokens": 500
+            "max_tokens": 500,
+            "response_format": {"type": "json_schema", "json_schema": json_schema}
         }
         
         for attempt in range(max_retries):
@@ -191,8 +239,18 @@ Return ONLY valid JSON, no additional text."""
                 if response.status_code == 200:
                     data = response.json()
                     if 'choices' in data and len(data['choices']) > 0:
-                        content = data['choices'][0]['message']['content']
-                        return self._parse_llm_response(content)
+                        content = data['choices'][0].get('message', {}).get('content')
+                        parsed = self._parse_llm_response(content)
+                        if parsed is not None:
+                            return parsed
+                        repaired = self._attempt_json_repair(content)
+                        if repaired is not None:
+                            return repaired
+                elif response.status_code == 400 and "response_format" in response.text:
+                    # Fallback for providers that don't support structured output hints
+                    payload.pop("response_format", None)
+                    logger.warning("Provider rejected response_format; retrying without schema enforcement.")
+                    continue
                 elif response.status_code == 429:
                     # Rate limited - wait and retry
                     wait_time = (attempt + 1) * 2
@@ -216,6 +274,46 @@ Return ONLY valid JSON, no additional text."""
                 time.sleep(1 * (attempt + 1))
         
         logger.error(f"Failed to get valid response from DeepSeek after {max_retries} attempts")
+        return None
+
+    def _attempt_json_repair(self, raw_content: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Ask LLM to repair malformed JSON payload into expected triage schema."""
+        if not raw_content:
+            return None
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._api_key}"
+            }
+            repair_prompt = (
+                "Convert the following text into a valid JSON object with keys: "
+                "score, priority, reasoning, recommended_action. Return JSON only.\n\n"
+                f"INPUT:\n{raw_content}"
+            )
+            payload = {
+                "model": self._model,
+                "messages": [
+                    {"role": "system", "content": "You only output valid JSON object."},
+                    {"role": "user", "content": repair_prompt}
+                ],
+                "temperature": 0.0,
+                "max_tokens": 220
+            }
+            response = requests.post(
+                f"{self._base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=12
+            )
+            if response.status_code == 200:
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                parsed = self._parse_llm_response(content)
+                if parsed is not None:
+                    logger.info("Recovered triage response using JSON repair pass.")
+                return parsed
+        except Exception as e:
+            logger.debug(f"JSON repair pass failed: {e}")
         return None
 
     def score_victim_llm(self, victim: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -249,7 +347,7 @@ Return ONLY valid JSON, no additional text."""
         # Try LLM-based scoring
         if self._check_llm_available():
             prompt = self._build_triage_prompt(victim, context)
-            llm_result = self._call_deepseek(prompt)
+            llm_result = self._call_deepseek(prompt, max_retries=1)
             
             if llm_result is not None:
                 result = {
