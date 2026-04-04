@@ -19,27 +19,36 @@ from agents.coordinator import CoordinatorAgent
 from agents.triage import TriageAgent, TriageVictim
 from config.settings import Settings
 
+def _build_runtime_components(env):
+    """Build fleet and agents from an environment snapshot."""
+    initial_drones = env.get_drone_snapshots()
+    drone_ids = [d.get('drone_id') or d.get('id') for d in initial_drones if (d.get('drone_id') or d.get('id'))]
+    if not drone_ids:
+        drone_ids = ['drone_1', 'drone_2', 'drone_3']
+    fleet = FleetState(drone_ids)
+    state_agent = StateAwarenessAgent(fleet)
+    coordinator = CoordinatorAgent(fleet)
+    triage = TriageAgent()
+    return fleet, state_agent, coordinator, triage
+
 # Initialize the environment and agents in session state
 def init_system():
     """Create mock environment, fleet state, and agents."""
     if 'env' not in st.session_state:
         try:
             st.session_state.env = get_environment()
-            initial_drones = st.session_state.env.get_drone_snapshots()
-            drone_ids = [d.get('drone_id') or d.get('id') for d in initial_drones if (d.get('drone_id') or d.get('id'))]
-            if not drone_ids:
-                drone_ids = ['drone_1', 'drone_2', 'drone_3']
-            st.session_state.fleet = FleetState(drone_ids)
-            st.session_state.state_agent = StateAwarenessAgent(st.session_state.fleet)
-            st.session_state.coordinator = CoordinatorAgent(st.session_state.fleet)
-            st.session_state.triage = TriageAgent()
+            fleet, state_agent, coordinator, triage = _build_runtime_components(st.session_state.env)
+            st.session_state.fleet = fleet
+            st.session_state.state_agent = state_agent
+            st.session_state.coordinator = coordinator
+            st.session_state.triage = triage
             st.session_state.simulation_running = False
             st.session_state.last_update_time = time.time()
             st.session_state.start_time = time.time()
             st.session_state.auto_refresh = True
             st.session_state.refresh_interval = 2.0
             st.session_state.system_status = "running"
-            st.session_state.demo_num_drones = st.session_state.get('demo_num_drones', len(drone_ids))
+            st.session_state.demo_num_drones = st.session_state.get('demo_num_drones', len(fleet.drones))
             st.session_state.demo_num_victims = st.session_state.get('demo_num_victims', 4)
             
             update_fleet_from_env()
@@ -69,20 +78,21 @@ def update_fleet_from_env():
         
         for d in drone_snapshots:
             drone_id = d.get('drone_id', d.get('id', 'unknown'))
-            if drone_id in fleet.drones:
-                drone = fleet.drones[drone_id]
-                drone.battery = d.get('battery_percent', d.get('battery', 100.0))
-                drone.position = tuple(d.get('position', (0.0, 0.0, 0.0)))
-                status = str(d.get('operational_status', 'idle')).lower()
-                if status in ('idle', 'available'):
-                    drone.status = DroneStatus.AVAILABLE
-                elif status in ('charging',):
-                    drone.status = DroneStatus.CHARGING
-                elif status in ('offline',):
-                    drone.status = DroneStatus.OFFLINE
-                else:
-                    drone.status = DroneStatus.BUSY
-                drone.current_mission_id = d.get('current_mission', None)
+            if drone_id not in fleet.drones:
+                fleet.drones[drone_id] = DroneState(id=drone_id)
+            drone = fleet.drones[drone_id]
+            drone.battery = d.get('battery_percent', d.get('battery', 100.0))
+            drone.position = tuple(d.get('position', (0.0, 0.0, 0.0)))
+            status = str(d.get('operational_status', 'idle')).lower()
+            if status in ('idle', 'available'):
+                drone.status = DroneStatus.AVAILABLE
+            elif status in ('charging',):
+                drone.status = DroneStatus.CHARGING
+            elif status in ('offline',):
+                drone.status = DroneStatus.OFFLINE
+            else:
+                drone.status = DroneStatus.BUSY
+            drone.current_mission_id = d.get('current_mission', None)
         
         st.session_state['victim_raw'] = {v.get('victim_id', v.get('id','')): v for v in victim_snapshots}
         for v in victim_snapshots:
@@ -568,9 +578,11 @@ def main():
                     )
                 else:
                     st.session_state.env = get_environment()
-                reset_drones = st.session_state.env.get_drone_snapshots()
-                reset_ids = [d.get('drone_id') or d.get('id') for d in reset_drones if (d.get('drone_id') or d.get('id'))]
-                st.session_state.fleet = FleetState(reset_ids if reset_ids else ['drone_1', 'drone_2', 'drone_3'])
+                fleet, state_agent, coordinator, triage = _build_runtime_components(st.session_state.env)
+                st.session_state.fleet = fleet
+                st.session_state.state_agent = state_agent
+                st.session_state.coordinator = coordinator
+                st.session_state.triage = triage
                 update_fleet_from_env()
                 st.session_state.start_time = time.time()
                 st.rerun()
