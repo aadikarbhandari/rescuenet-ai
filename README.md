@@ -15,12 +15,14 @@ The system enables real-time victim detection, injury triage, coordinated multi-
 - **Dual Mode Operation** — Demo mode (mock environment, no hardware) and AirSim mode (Unreal Engine)
 - **Mission Lifecycle** — Full cycle: victim discovery → triage → dispatch → en route → on scene → return to base → charging → idle
 - **AI Decisions Log** — Live log of every LLM dispatch decision with timestamps and assignments
+- **Policy Guardrails** — Battery floor, reserve drone, and distance sanity checks before mission execution
 
 ## System Architecture
 
 ```
 Multi-Agent AI Layer
   ├── Coordinator Agent    — LLM-driven dispatch + rule-based fallback
+  ├── Policy Engine        — Hard safety guardrails over autonomous decisions
   ├── Triage Agent         — Victim prioritization scoring
   ├── Security Agent       — GPS spoofing & jamming detection
   ├── State Awareness      — Fleet state management
@@ -172,3 +174,18 @@ Click the reset button in the sidebar, or restart streamlit.
 - **AirSim Integration** — full drone command execution requires Unreal Engine + GPU
 - **Thread Safety** — global state in the API server is not thread-safe under concurrent load
 - **No Authentication** — API endpoints are publicly accessible
+
+## Production Readiness Status
+
+RescueNet is currently a high-capability prototype with strong autonomous workflow coverage, but it is not yet fully production-hardened for real-world emergency infrastructure.
+
+### Already implemented for safer autonomy
+- LLM + rule-based fallback behavior for triage/dispatch
+- Enum-based state consistency in fleet/mission lifecycle
+- Policy guardrails before executing assignments (battery floor, reserve drones, distance sanity)
+
+### Still required for full production operations
+- Hardware-in-the-loop validation at scale
+- AuthN/AuthZ, encryption, and complete command audit trails
+- Reliability SLOs, distributed queueing/retries, and chaos testing
+- Regulatory/certification and formal incident response runbooks
