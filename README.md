@@ -33,6 +33,7 @@ Multi-Agent AI Layer
 
 Control & Integration Layer
   ├── Fleet State          — Drone & mission state management
+  ├── Adapter Manager      — Runtime loading + health for vendor adapters
   ├── FastAPI Server       — REST API on port 8000
   └── Streamlit Dashboard  — Real-time web UI on port 8501
 
@@ -86,6 +87,20 @@ Key dependencies: `fastapi`, `uvicorn`, `streamlit`, `pandas`, `requests`
 | `DEEPSEEK_MODEL` | Model name | DeepSeek-V3.2 |
 | `RUNTIME_MODE` | `DEMO`, `AIRSIM`, or `SIM` | `DEMO` |
 | `RESCUENET_API_KEY` | Optional API key for protecting REST endpoints | Unset (auth off) |
+
+4. Optional: register vendor adapters in `config.json`:
+```json
+{
+  "adapters": [
+    {
+      "vendor": "vendor_name",
+      "type": "drone",
+      "class_path": "your_package.your_module.YourDroneAdapter",
+      "config": {}
+    }
+  ]
+}
+```
 
 ## Running Demo Mode
 

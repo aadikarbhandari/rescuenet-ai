@@ -18,6 +18,7 @@ from agents.coordinator import CoordinatorAgent
 from agents.security import SecurityAgent
 from agents.policy_engine import PolicyEngine, PolicyConfig
 from api.server import run_server_background, update_state
+from integration.manager import AdapterManager
 
 
 def setup_logging(verbose: bool = False):
@@ -162,6 +163,9 @@ def main():
     
     security_agent = SecurityAgent(settings)
     logger.info("SecurityAgent initialized")
+    adapter_manager = AdapterManager()
+    adapter_manager.load_from_config("config.json")
+    logger.info(f"AdapterManager initialized: {adapter_manager.health_report()}")
     policy_engine = PolicyEngine(
         PolicyConfig(
             min_battery_for_new_mission=25.0,
@@ -226,6 +230,7 @@ def main():
                 'drones': list(fleet.drones.values()),
                 'victims': list(fleet.victims.values()),
                 'missions': list(fleet.missions.values()),
+                'adapters': adapter_manager.health_report(),
                 'stats': {
                     'tick': tick,
                     'available_drones': len(fleet.get_available_drones()),

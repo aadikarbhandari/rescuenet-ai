@@ -28,6 +28,7 @@
 - `dashboard/dash.py`
 - `integration/__init__.py`
 - `integration/adapters.py`
+- `integration/manager.py`
 - `main.py`
 - `requirements.txt`
 - `simulation/__init__.py`
@@ -72,6 +73,7 @@
 - `dashboard/dash.py` — Python module. (functions: call_glm, main)
 - `integration/__init__.py` — Integration layer for vendor-specific drone and sensor adapters.
 - `integration/adapters.py` — Vendor adapter contracts + registry. (classes: NormalizedDrone, NormalizedVictimSignal, DroneAdapter, SensorAdapter, AdapterRegistry)
+- `integration/manager.py` — Runtime adapter manager. (classes: AdapterSpec, AdapterManager)
 - `main.py` — RescueNet AI - Main Entry Point (functions: setup_logging, print_startup_banner, print_tick_summary, land_all_drones, normalize_victim_snapshot)
 - `requirements.txt` — Project config/docs/dependencies.
 - `simulation/__init__.py` — Python module.
