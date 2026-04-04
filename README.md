@@ -91,6 +91,7 @@ Key dependencies: `fastapi`, `uvicorn`, `streamlit`, `pandas`, `requests`
 | `RUNTIME_MODE` | `DEMO`, `AIRSIM`, or `SIM` | `DEMO` |
 | `RESCUENET_API_KEY` | Optional API key for REST auth (`key` or `sha256:<digest>`, comma-separated keys supported) | Unset (auth off) |
 | `RESCUENET_RATE_LIMIT_PER_MIN` | Optional per-IP limit for protected endpoints | `120` |
+| `RESCUENET_STATE_DB` | SQLite path for durable API state backend | `runtime_data/state.db` |
 
 4. Optional: register vendor adapters in `config.json`:
 ```json
@@ -130,6 +131,7 @@ If `RESCUENET_API_KEY` is set, REST endpoints (except health/docs) require:
 Ops reliability metrics endpoint:
 - `GET /ops/metrics`
 - `GET /ops/events?limit=50` (persisted runtime events tail)
+- `GET /ops/state-backend` (active API state backend info)
 
 Production validation harness (Pass 6):
 - `python scripts/release_gate.py`
@@ -141,6 +143,7 @@ Production validation harness (Pass 6):
 - Pass 10 adds persistence tests under `tests/test_pass10_persistence.py`.
 - Pass 11 adds observability percentile tests under `tests/test_pass11_observability.py`.
 - Pass 12 adds API hardening tests under `tests/test_pass12_api_hardening.py`.
+- Pass 13 adds durable state backend tests under `tests/test_pass13_state_backend.py`.
 
 ## Running the Dashboard
 

@@ -1,6 +1,7 @@
 import os
 import hashlib
 import hmac
+from dataclasses import asdict, is_dataclass
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,6 +12,7 @@ import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from utils.persistence import RuntimeStore
+from utils.state_store import SQLiteStateStore
 
 app = FastAPI(title="RescueNet AI API")
 
@@ -27,6 +29,7 @@ app.add_middleware(
 _state_lock = threading.Lock()
 _rate_lock = threading.Lock()
 _rate_state: Dict[str, List[float]] = {}
+_db_store = SQLiteStateStore.from_path(os.getenv("RESCUENET_STATE_DB", "runtime_data/state.db"))
 _state: Dict[str, Any] = {
     "mode": "idle",
     "tick": 0,
@@ -44,11 +47,40 @@ _state: Dict[str, Any] = {
 }
 
 
+def _json_safe(value: Any) -> Any:
+    if is_dataclass(value):
+        return _json_safe(asdict(value))
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def update_state(new_state: dict) -> None:
     """Update the global _state dict with new data from simulation tick."""
     global _state
+    safe_update = _json_safe(new_state)
     with _state_lock:
-        _state.update(new_state)
+        _state.update(safe_update)
+    try:
+        _db_store.set_many(safe_update)
+    except Exception:
+        # DB persistence is best-effort; keep API serving from in-memory state.
+        pass
+
+
+def _state_get(key: str, default: Any = None) -> Any:
+    with _state_lock:
+        if key in _state:
+            return _state.get(key, default)
+    try:
+        value = _db_store.get(key, None)
+        return default if value is None else value
+    except Exception:
+        return default
 
 
 def _api_key_required() -> bool:
@@ -133,8 +165,8 @@ def health() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "ok",
-        "tick": _state.get("tick", 0),
-        "mode": _state.get("mode", "idle"),
+        "tick": _state_get("tick", 0),
+        "mode": _state_get("mode", "idle"),
         "timestamp": datetime.now().isoformat()
     }
 
@@ -147,17 +179,17 @@ def get_status() -> Dict[str, Any]:
         missions = list(_state.get("missions", []))
     
     return {
-        "mode": _state.get("mode", "idle"),
-        "tick": _state.get("tick", 0),
-        "drones_available": _state.get("drones_available", sum(1 for d in drones if d.get("status") == "available")),
+        "mode": _state_get("mode", "idle"),
+        "tick": _state_get("tick", 0),
+        "drones_available": _state_get("drones_available", sum(1 for d in drones if d.get("status") == "available")),
         "drones_total": len(drones),
-        "active_missions": _state.get("active_missions", sum(1 for m in missions if m.get("status") == "active")),
+        "active_missions": _state_get("active_missions", sum(1 for m in missions if m.get("status") == "active")),
         "total_missions": len(missions),
-        "total_victims": len(_state.get("victims", [])),
-        "victims_rescued": _state.get("total_victims_rescued", 0),
-        "victims_lost": _state.get("total_victims_lost", 0),
-        "security_alerts_count": len(_state.get("security_alerts", [])),
-        "uptime_start": _state.get("system_start_time", ""),
+        "total_victims": len(_state_get("victims", [])),
+        "victims_rescued": _state_get("total_victims_rescued", 0),
+        "victims_lost": _state_get("total_victims_lost", 0),
+        "security_alerts_count": len(_state_get("security_alerts", [])),
+        "uptime_start": _state_get("system_start_time", ""),
     }
 
 
@@ -279,13 +311,13 @@ def get_analytics_summary() -> Dict[str, Any]:
         "serious": sum(1 for v in victims if v.get("triage_priority") == "serious"),
         "moderate": sum(1 for v in victims if v.get("triage_priority") == "moderate"),
         "minor": sum(1 for v in victims if v.get("triage_priority") == "minor"),
-        "rescued": _state.get("total_victims_rescued", 0),
-        "lost": _state.get("total_victims_lost", 0),
+        "rescued": _state_get("total_victims_rescued", 0),
+        "lost": _state_get("total_victims_lost", 0),
     }
     
     return {
-        "tick": _state.get("tick", 0),
-        "mode": _state.get("mode", "idle"),
+        "tick": _state_get("tick", 0),
+        "mode": _state_get("mode", "idle"),
         "drone_stats": drone_stats,
         "mission_stats": mission_stats,
         "victim_stats": victim_stats,
@@ -295,8 +327,7 @@ def get_analytics_summary() -> Dict[str, Any]:
 @app.get("/ops/metrics")
 def get_ops_metrics() -> Dict[str, Any]:
     """Operational reliability/performance metrics from runtime loop."""
-    with _state_lock:
-        return dict(_state.get("ops_metrics", {}))
+    return dict(_state_get("ops_metrics", {}))
 
 
 @app.get("/ops/events")
@@ -304,6 +335,15 @@ def get_ops_events(limit: int = 50) -> List[Dict[str, Any]]:
     """Tail persisted runtime events from disk."""
     store = RuntimeStore.from_path(os.getenv("RESCUENET_RUNTIME_DIR", "runtime_data"))
     return store.tail_events(limit=max(1, min(limit, 500)))
+
+
+@app.get("/ops/state-backend")
+def get_state_backend() -> Dict[str, Any]:
+    """Report active state backend for API runtime data."""
+    return {
+        "backend": "sqlite_kv",
+        "db_path": os.getenv("RESCUENET_STATE_DB", "runtime_data/state.db"),
+    }
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
@@ -322,7 +362,11 @@ def run_server_background(host: str = "0.0.0.0", port: int = 8000) -> threading.
 def get_state() -> Dict[str, Any]:
     """Get current global state (for external simulation access)."""
     with _state_lock:
-        return _state.copy()
+        live = _state.copy()
+    for k in ("mode", "tick", "drones", "victims", "missions", "ops_metrics"):
+        if k not in live:
+            live[k] = _state_get(k)
+    return live
 
 
 if __name__ == "__main__":
