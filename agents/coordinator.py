@@ -8,10 +8,9 @@ import json
 import time
 import logging
 from typing import List, Dict, Any, Optional, Tuple, Union
-from datetime import datetime
 
 from config.settings import Settings
-from state.fleet_state import FleetState, DroneState, VictimState, MissionAssignment
+from state.fleet_state import FleetState, DroneState, VictimState, MissionAssignment, MissionStatus, DroneStatus
 
 logger = logging.getLogger(__name__)
 
@@ -283,19 +282,19 @@ Only include assignments where a drone can reasonably reach the victim.
                 id=f"mission_{int(time.time() * 1000)}_{drone_id}",
                 drone_id=drone_id,
                 victim_id=victim_id,
-                status="PENDING",
+                status=MissionStatus.PENDING,
                 waypoints=[
-                    list(victim.position)
+                    tuple(victim.position)
                 ],
-                created_at=datetime.now()
+                created_at=time.time()
             )
 
             # Add mission to fleet state
             self.fleet_state.add_mission(mission)
             
             # Update drone status to BUSY
-            drone.status = "BUSY"
-            drone.mission_id = mission.id
+            drone.status = DroneStatus.BUSY
+            drone.current_mission_id = mission.id
             
             # Update victim status
             victim.status = "assigned"
@@ -321,7 +320,7 @@ Only include assignments where a drone can reasonably reach the victim.
         """
         # Check for aborted/failed missions
         for mission in self.fleet_state.missions.values():
-            if mission.status in ["FAILED", "CANCELLED", "ABORTED"]:
+            if mission.status in [MissionStatus.FAILED, MissionStatus.CANCELLED]:
                 # Reassign victim
                 victim = self.fleet_state.victims.get(mission.victim_id)
                 if victim and victim.status == "assigned":
