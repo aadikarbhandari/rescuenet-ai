@@ -1,0 +1,85 @@
+# Codebase Brief
+
+## Folder/File Structure
+- `.gitignore`
+- `AUDIT_NOTES.md`
+- `CODEBASE_BRIEF.md`
+- `PHASE2_SUMMARY.md`
+- `PRODUCTION_PASS_PLAN.md`
+- `README.md`
+- `RUNBOOK.md`
+- `agents/__init__.py`
+- `agents/coordinator.py`
+- `agents/perception.py`
+- `agents/policy_engine.py`
+- `agents/routing.py`
+- `agents/security.py`
+- `agents/state_awareness.py`
+- `agents/triage.py`
+- `agents/voice.py`
+- `api/__init__.py`
+- `api/server.py`
+- `config/__init__.py`
+- `config/settings.py`
+- `config.json`
+- `config.py`
+- `dashboard/__init__.py`
+- `dashboard/app.py`
+- `dashboard/dash.py`
+- `integration/__init__.py`
+- `integration/adapters.py`
+- `main.py`
+- `requirements.txt`
+- `simulation/__init__.py`
+- `simulation/airsim_adapter/__init__.py`
+- `simulation/airsim_adapter/adapter.py`
+- `simulation/airsim_adapter/contracts.py`
+- `simulation/airsim_env.py`
+- `simulation/drone.py`
+- `simulation/environment.py`
+- `simulation/factory.py`
+- `simulation/mock_env.py`
+- `state/__init__.py`
+- `state/fleet_state.py`
+
+## What each file does (concise)
+- `.gitignore` — Project config/docs/dependencies.
+- `AUDIT_NOTES.md` — Project config/docs/dependencies.
+- `CODEBASE_BRIEF.md` — Project config/docs/dependencies.
+- `PHASE2_SUMMARY.md` — Project config/docs/dependencies.
+- `PRODUCTION_PASS_PLAN.md` — Project config/docs/dependencies.
+- `README.md` — Project config/docs/dependencies.
+- `RUNBOOK.md` — Project config/docs/dependencies.
+- `agents/__init__.py` — Python module.
+- `agents/coordinator.py` — RescueNet AI - Coordinator Agent (classes: CoordinatorAgent)
+- `agents/perception.py` — Vision + acoustic detection
+- `agents/policy_engine.py` — RescueNet Policy Engine (classes: PolicyConfig, PolicyEngine)
+- `agents/routing.py` — Navigation + jamming fallback
+- `agents/security.py` — Python module. (classes: AlertSeverity, AlertType, SecurityAlert, SecurityAgent; functions: check_for_spoofing, get_security_alerts, log_security_event)
+- `agents/state_awareness.py` — CRITICAL - live fleet state + decision helpers (classes: StateAwarenessAgent)
+- `agents/triage.py` — Triage Agent for RescueNet AI (classes: TriageVictim, TriageAgent)
+- `agents/voice.py` — PersonaPlex integration
+- `api/__init__.py` — Python module.
+- `api/server.py` — Python module. (functions: update_state, health, get_status, get_drones, get_drone)
+- `config/__init__.py` — Configuration module for RescueNet AI.
+- `config/settings.py` — Python module. (classes: RuntimeMode, LogLevel, RescueStation, AirSimSettings, DeepSeekSettings; functions: get_settings, load_settings, get_deepseek_headers, get_llm_client, reset_settings)
+- `config.json` — Project config/docs/dependencies.
+- `config.py` — Python module.
+- `dashboard/__init__.py` — Python module.
+- `dashboard/app.py` — Python module. (functions: init_system, update_fleet_from_env, create_new_assignments, load_ai_decisions, _build_ops_context)
+- `dashboard/dash.py` — Python module. (functions: call_glm, main)
+- `integration/__init__.py` — Integration layer for vendor-specific drone and sensor adapters.
+- `integration/adapters.py` — Vendor adapter contracts + registry. (classes: NormalizedDrone, NormalizedVictimSignal, DroneAdapter, SensorAdapter, AdapterRegistry)
+- `main.py` — RescueNet AI - Main Entry Point (functions: setup_logging, print_startup_banner, print_tick_summary, land_all_drones, normalize_victim_snapshot)
+- `requirements.txt` — Project config/docs/dependencies.
+- `simulation/__init__.py` — Python module.
+- `simulation/airsim_adapter/__init__.py` — AirSim adapter package for RescueNet AI.
+- `simulation/airsim_adapter/adapter.py` — AirSim adapter for RescueNet AI. (classes: AirSimAdapter; functions: create_airsim_adapter)
+- `simulation/airsim_adapter/contracts.py` — AirSim data contracts and models for RescueNet AI. (classes: SensorType, SensorStatus, DroneOperationalStatus, DetectionConfidence, MissionCommandType; functions: telemetry_to_drone_state, detection_to_victim_state, create_mission_command, validate_telemetry, validate_detection)
+- `simulation/airsim_env.py` — Python module. (classes: AirSimEnv)
+- `simulation/drone.py` — Python module. (classes: Drone)
+- `simulation/environment.py` — Environment abstraction interface for RescueNet AI. (classes: Environment)
+- `simulation/factory.py` — Environment factory for creating environment instances based on runtime mode. (classes: SimulationFactory; functions: create_environment, get_environment)
+- `simulation/mock_env.py` — Deterministic mock disaster environment. (classes: MockDisasterEnv)
+- `state/__init__.py` — Python module.
+- `state/fleet_state.py` — Python module. (classes: DroneStatus, MissionStatus, DroneState, VictimState, MissionAssignment)
