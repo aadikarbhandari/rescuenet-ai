@@ -145,6 +145,33 @@ Return ONLY valid JSON object, no markdown/code fences/no extra text."""
                 result['recommended_action'] = result.get('action', result.get('recommended_next_step'))
             if 'reasoning' not in result:
                 result['reasoning'] = result.get('reason', result.get('explanation', ''))
+
+            # Normalize common value variants so provider wording still maps to contract.
+            if 'priority' in result and isinstance(result['priority'], str):
+                p = result['priority'].strip().lower()
+                if p in ('urgent', 'emergency'):
+                    p = 'critical'
+                elif p in ('severe',):
+                    p = 'high'
+                result['priority'] = p
+
+            if 'recommended_action' in result and isinstance(result['recommended_action'], str):
+                a = result['recommended_action'].strip().lower()
+                if 'extract' in a or 'evac' in a or 'medical facility' in a:
+                    a = 'extract'
+                elif 'supply' in a:
+                    a = 'deliver_supplies'
+                elif 'scout' in a or 'assess' in a or 'survey' in a:
+                    a = 'scout'
+                elif 'monitor' in a or 'observe' in a:
+                    a = 'monitor'
+                result['recommended_action'] = a
+
+            if 'score' in result and isinstance(result['score'], str):
+                try:
+                    result['score'] = float(result['score'])
+                except ValueError:
+                    pass
             
             # Validate required fields
             required_fields = ['score', 'priority', 'reasoning', 'recommended_action']
