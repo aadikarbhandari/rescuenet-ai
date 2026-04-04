@@ -11,7 +11,7 @@ from typing import List, Dict, Any
 
 from config.settings import load_settings
 from simulation.factory import SimulationFactory
-from state.fleet_state import FleetState
+from state.fleet_state import FleetState, DroneStatus, MissionStatus
 from agents.triage import TriageAgent
 from agents.coordinator import CoordinatorAgent
 from agents.security import SecurityAgent
@@ -45,8 +45,8 @@ def print_tick_summary(tick: int, fleet: FleetState, active_missions: int,
                        alerts: List, victims: List, new_assignments: int):
     """Print simulation tick summary."""
     available = len(fleet.get_available_drones())
-    busy = sum(1 for d in fleet.drones.values() if d.status == 'BUSY' or (hasattr(d.status, 'value') and d.status.value == 'BUSY'))
-    charging = sum(1 for d in fleet.drones.values() if d.status == 'CHARGING' or (hasattr(d.status, 'value') and d.status.value == 'CHARGING'))
+    busy = sum(1 for d in fleet.drones.values() if d.status == DroneStatus.BUSY)
+    charging = sum(1 for d in fleet.drones.values() if d.status == DroneStatus.CHARGING)
     
     print(f"\n--- Tick {tick} ---")
     print(f"Fleet: {available} available, {busy} busy, {charging} charging")
@@ -68,6 +68,23 @@ def land_all_drones(env):
                 drone["operational_status"] = "returning_to_base"
     except Exception as e:
         logging.error(f"Error during emergency landing: {e}")
+
+
+def normalize_victim_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize environment victim snapshot into FleetState-compatible shape."""
+    victim_id = snapshot.get("victim_id") or snapshot.get("id")
+    injury = str(snapshot.get("injury_severity", snapshot.get("severity", "moderate"))).lower()
+    sev_map = {"critical": 95, "severe": 75, "moderate": 50, "minor": 25}
+    triage_score = float(snapshot.get("triage_score", sev_map.get(injury, 50)))
+    return {
+        "id": victim_id,
+        "position": snapshot.get("position", (0.0, 0.0, 0.0)),
+        "severity": int(sev_map.get(injury, 50)),
+        "triage_score": triage_score,
+        "status": "assigned" if snapshot.get("assigned_drone") else "discovered",
+        "assigned_drone_id": snapshot.get("assigned_drone"),
+        "assigned_mission_id": snapshot.get("mission_id"),
+    }
 
 
 def main():
@@ -148,9 +165,9 @@ def main():
             
             # Update fleet victims
             for vs in victim_snapshots:
-                victim_id = vs.get('victim_id')
+                victim_id = vs.get('victim_id') or vs.get('id')
                 if victim_id:
-                    fleet.update_victim(vs)
+                    fleet.update_victim(normalize_victim_snapshot(vs))
             
             # Triage: prioritize victims
             triage_results = triage_agent.prioritize_all(victim_snapshots)
@@ -180,7 +197,7 @@ def main():
                     'tick': tick,
                     'available_drones': len(fleet.get_available_drones()),
                     'active_missions': len([m for m in fleet.missions.values() 
-                                           if m.status in ['ACTIVE', 'PENDING'] or (hasattr(m.status, 'value') and m.status.value in ['ACTIVE', 'PENDING'])]),
+                                           if m.status in [MissionStatus.ACTIVE, MissionStatus.PENDING]]),
                     'completed_missions': len(completed)
                 }
             }
@@ -188,7 +205,7 @@ def main():
             
             # Print summary
             print_tick_summary(tick, fleet, len([m for m in fleet.missions.values() 
-                                                  if m.status in ['ACTIVE', 'PENDING'] or (hasattr(m.status, 'value') and m.status.value in ['ACTIVE', 'PENDING'])]),
+                                                  if m.status in [MissionStatus.ACTIVE, MissionStatus.PENDING]]),
                              alerts, victim_snapshots, new_assignments)
             
             # Small delay between ticks
