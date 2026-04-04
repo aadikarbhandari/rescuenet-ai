@@ -180,11 +180,13 @@ Then open `http://localhost:8501` locally.
 1. Start AirSim in Unreal Engine
 2. Configure and run:
 ```bash
-export RUNTIME_MODE=AIRSIM
+export RESCUENET_MODE=AIRSIM
 export AIRSIM_IP=127.0.0.1
 export AIRSIM_PORT=41451
 export DEEPSEEK_API_KEY=your_api_key
 python main.py --mode airsim
+# alias also supported:
+# python main.py --mode sim
 ```
 
 ## Demo Walkthrough

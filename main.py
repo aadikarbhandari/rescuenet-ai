@@ -11,6 +11,7 @@ import os
 from typing import List, Dict, Any
 
 from config.settings import load_settings
+from config import RuntimeMode
 from simulation.factory import SimulationFactory
 from state.fleet_state import FleetState, DroneStatus, MissionStatus
 from agents.triage import TriageAgent
@@ -118,7 +119,7 @@ def main():
     """Main entry point for RescueNet AI."""
     parser = argparse.ArgumentParser(description='RescueNet AI - Autonomous Disaster Response')
     parser.add_argument('--mode', type=str, default='demo', 
-                       choices=['demo', 'sim'], help='Runtime mode')
+                       choices=['demo', 'sim', 'airsim'], help='Runtime mode')
     parser.add_argument('--ticks', type=int, default=20, 
                        help='Number of simulation ticks')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -135,7 +136,7 @@ def main():
     # Load settings
     settings = load_settings()
     settings.ticks = args.ticks
-    settings.mode = args.mode
+    settings.mode = RuntimeMode(args.mode.lower()) if args.mode.lower() in ("demo", "sim", "airsim") else RuntimeMode.DEMO
     settings.api_enabled = True
     settings.api_port = args.api_port
     warn_if_llm_not_configured(logger)

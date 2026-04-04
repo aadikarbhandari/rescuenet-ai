@@ -16,7 +16,7 @@ class SimulationFactory:
     """
     Factory class for creating environment instances based on runtime mode.
     
-    Provides clean activation paths for both demo and sim modes:
+    Provides clean activation paths for both demo and sim/airsim modes:
     - Demo mode: Always works with mock environment
     - Sim mode: Attempts to activate AirSim path with lazy imports and clear error handling
     """
@@ -39,9 +39,10 @@ class SimulationFactory:
             ImportError: If AirSim dependencies are missing (sim mode only)
             RuntimeError: If AirSim activation fails (sim mode only)
         """
-        if settings.mode == RuntimeMode.DEMO:
+        mode = settings.mode.value if isinstance(settings.mode, RuntimeMode) else str(settings.mode).lower()
+        if mode == RuntimeMode.DEMO.value:
             return SimulationFactory._create_demo(settings)
-        elif settings.mode == RuntimeMode.SIM:
+        elif mode in (RuntimeMode.SIM.value, RuntimeMode.AIRSIM.value):
             return SimulationFactory._create_airsim(settings)
         else:
             raise ValueError(f"Unsupported runtime mode: {settings.mode}")
@@ -101,17 +102,15 @@ class SimulationFactory:
         
         # Attempt to create AirSim environment
         try:
-            env = AirSimEnvironment(
-                host=settings.airsim_host,
-                port=settings.airsim_port
-            )
+            env = AirSimEnvironment(settings)
             
             # Verify the environment is functional
             if not hasattr(env, 'step') or not callable(env.step):
                 raise RuntimeError("AirSimEnvironment created but missing required methods")
             
-            # Connect and initialize
-            env.connect()
+            # Connect and initialize if needed
+            if hasattr(env, "is_connected") and not env.is_connected:
+                env.connect()
             
             num_drones = getattr(settings, 'num_drones', len(settings.drone_names)) if hasattr(settings, 'drone_names') else getattr(settings, 'num_drones', 1)
             print(f"[Factory] Connected. {num_drones} drones ready.")

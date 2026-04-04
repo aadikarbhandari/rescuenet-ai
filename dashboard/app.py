@@ -24,7 +24,11 @@ def init_system():
     if 'env' not in st.session_state:
         try:
             st.session_state.env = get_environment()
-            st.session_state.fleet = FleetState(['drone_1', 'drone_2', 'drone_3'])
+            initial_drones = st.session_state.env.get_drone_snapshots()
+            drone_ids = [d.get('drone_id') or d.get('id') for d in initial_drones if (d.get('drone_id') or d.get('id'))]
+            if not drone_ids:
+                drone_ids = ['drone_1', 'drone_2', 'drone_3']
+            st.session_state.fleet = FleetState(drone_ids)
             st.session_state.state_agent = StateAwarenessAgent(st.session_state.fleet)
             st.session_state.coordinator = CoordinatorAgent(st.session_state.fleet)
             st.session_state.triage = TriageAgent()
