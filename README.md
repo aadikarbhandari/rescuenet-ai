@@ -92,6 +92,7 @@ Key dependencies: `fastapi`, `uvicorn`, `streamlit`, `pandas`, `requests`
 | `RESCUENET_API_KEY` | Optional API key for REST auth (`key` or `sha256:<digest>`, comma-separated keys supported) | Unset (auth off) |
 | `RESCUENET_RATE_LIMIT_PER_MIN` | Optional per-IP limit for protected endpoints | `120` |
 | `RESCUENET_STATE_DB` | SQLite path for durable API state backend | `runtime_data/state.db` |
+| `RESCUENET_QUEUE_DB` | SQLite path for durable async task queue backend | `runtime_data/queue.db` |
 
 4. Optional: register vendor adapters in `config.json`:
 ```json
@@ -132,6 +133,7 @@ Ops reliability metrics endpoint:
 - `GET /ops/metrics`
 - `GET /ops/events?limit=50` (persisted runtime events tail)
 - `GET /ops/state-backend` (active API state backend info)
+- `POST /ops/tasks/enqueue`, `POST /ops/tasks/claim`, `GET /ops/tasks` (durable queue control plane)
 
 Production validation harness (Pass 6):
 - `python scripts/release_gate.py`
@@ -144,6 +146,7 @@ Production validation harness (Pass 6):
 - Pass 11 adds observability percentile tests under `tests/test_pass11_observability.py`.
 - Pass 12 adds API hardening tests under `tests/test_pass12_api_hardening.py`.
 - Pass 13 adds durable state backend tests under `tests/test_pass13_state_backend.py`.
+- Pass 14 adds durable task queue tests under `tests/test_pass14_task_queue.py`.
 
 ## Running the Dashboard
 

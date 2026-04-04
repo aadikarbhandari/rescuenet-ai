@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 from utils.persistence import RuntimeStore
 from utils.state_store import SQLiteStateStore
+from utils.task_queue import SQLiteTaskQueue
 
 app = FastAPI(title="RescueNet AI API")
 
@@ -30,6 +31,7 @@ _state_lock = threading.Lock()
 _rate_lock = threading.Lock()
 _rate_state: Dict[str, List[float]] = {}
 _db_store = SQLiteStateStore.from_path(os.getenv("RESCUENET_STATE_DB", "runtime_data/state.db"))
+_task_queue = SQLiteTaskQueue(os.getenv("RESCUENET_QUEUE_DB", "runtime_data/queue.db"))
 _state: Dict[str, Any] = {
     "mode": "idle",
     "tick": 0,
@@ -344,6 +346,49 @@ def get_state_backend() -> Dict[str, Any]:
         "backend": "sqlite_kv",
         "db_path": os.getenv("RESCUENET_STATE_DB", "runtime_data/state.db"),
     }
+
+
+@app.post("/ops/tasks/enqueue")
+def enqueue_task(body: Dict[str, Any]) -> Dict[str, Any]:
+    kind = str(body.get("kind") or "generic")
+    payload = body.get("payload", {}) or {}
+    task_id = body.get("task_id")
+    tid = _task_queue.enqueue(kind=kind, payload=payload, task_id=task_id)
+    return {"task_id": tid, "status": "queued"}
+
+
+@app.get("/ops/tasks")
+def list_ops_tasks(limit: int = 50) -> List[Dict[str, Any]]:
+    return _task_queue.list_tasks(limit=limit)
+
+
+@app.post("/ops/tasks/claim")
+def claim_ops_task(kind: Optional[str] = None) -> Dict[str, Any]:
+    task = _task_queue.claim_next(kind=kind)
+    if not task:
+        return {"task": None}
+    return {
+        "task": {
+            "task_id": task.task_id,
+            "kind": task.kind,
+            "payload": task.payload,
+            "status": task.status,
+            "attempts": task.attempts,
+        }
+    }
+
+
+@app.post("/ops/tasks/{task_id}/complete")
+def complete_ops_task(task_id: str) -> Dict[str, Any]:
+    _task_queue.complete(task_id)
+    return {"task_id": task_id, "status": "done"}
+
+
+@app.post("/ops/tasks/{task_id}/fail")
+def fail_ops_task(task_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    error = str(body.get("error") or "unknown error")
+    _task_queue.fail(task_id, error=error)
+    return {"task_id": task_id, "status": "failed"}
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
