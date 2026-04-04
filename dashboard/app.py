@@ -6,15 +6,30 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 import pandas as pd
+import requests
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
 
 # Import existing backend modules
 from simulation.factory import get_environment
-from state.fleet_state import FleetState, DroneState, VictimState
+from simulation.mock_env import MockDisasterEnv
+from state.fleet_state import FleetState, DroneState, VictimState, DroneStatus, MissionStatus
 from agents.state_awareness import StateAwarenessAgent
 from agents.coordinator import CoordinatorAgent
 from agents.triage import TriageAgent, TriageVictim
+from config.settings import Settings
+
+def _build_runtime_components(env):
+    """Build fleet and agents from an environment snapshot."""
+    initial_drones = env.get_drone_snapshots()
+    drone_ids = [d.get('drone_id') or d.get('id') for d in initial_drones if (d.get('drone_id') or d.get('id'))]
+    if not drone_ids:
+        drone_ids = ['drone_1', 'drone_2', 'drone_3']
+    fleet = FleetState(drone_ids)
+    state_agent = StateAwarenessAgent(fleet)
+    coordinator = CoordinatorAgent(fleet)
+    triage = TriageAgent()
+    return fleet, state_agent, coordinator, triage
 
 # Initialize the environment and agents in session state
 def init_system():
@@ -22,16 +37,19 @@ def init_system():
     if 'env' not in st.session_state:
         try:
             st.session_state.env = get_environment()
-            st.session_state.fleet = FleetState(['drone_1', 'drone_2', 'drone_3'])
-            st.session_state.state_agent = StateAwarenessAgent(st.session_state.fleet)
-            st.session_state.coordinator = CoordinatorAgent(st.session_state.fleet)
-            st.session_state.triage = TriageAgent()
+            fleet, state_agent, coordinator, triage = _build_runtime_components(st.session_state.env)
+            st.session_state.fleet = fleet
+            st.session_state.state_agent = state_agent
+            st.session_state.coordinator = coordinator
+            st.session_state.triage = triage
             st.session_state.simulation_running = False
             st.session_state.last_update_time = time.time()
             st.session_state.start_time = time.time()
             st.session_state.auto_refresh = True
             st.session_state.refresh_interval = 2.0
             st.session_state.system_status = "running"
+            st.session_state.demo_num_drones = st.session_state.get('demo_num_drones', len(fleet.drones))
+            st.session_state.demo_num_victims = st.session_state.get('demo_num_victims', 4)
             
             update_fleet_from_env()
             
@@ -60,24 +78,43 @@ def update_fleet_from_env():
         
         for d in drone_snapshots:
             drone_id = d.get('drone_id', d.get('id', 'unknown'))
-            if drone_id in fleet.drones:
-                drone = fleet.drones[drone_id]
-                drone.battery = d.get('battery_percent', d.get('battery', 100.0))
-                drone.position = tuple(d.get('position', (0.0, 0.0, 0.0)))
-                status = d.get('operational_status', 'idle')
-                drone.status = status
-                drone.current_mission_id = d.get('current_mission', None)
+            if drone_id not in fleet.drones:
+                fleet.drones[drone_id] = DroneState(id=drone_id)
+            drone = fleet.drones[drone_id]
+            drone.battery = d.get('battery_percent', d.get('battery', 100.0))
+            drone.position = tuple(d.get('position', (0.0, 0.0, 0.0)))
+            status = str(d.get('operational_status', 'idle')).lower()
+            if status in ('idle', 'available'):
+                drone.status = DroneStatus.AVAILABLE
+            elif status in ('charging',):
+                drone.status = DroneStatus.CHARGING
+            elif status in ('offline',):
+                drone.status = DroneStatus.OFFLINE
+            else:
+                drone.status = DroneStatus.BUSY
+            drone.current_mission_id = d.get('current_mission', None)
         
         st.session_state['victim_raw'] = {v.get('victim_id', v.get('id','')): v for v in victim_snapshots}
         for v in victim_snapshots:
             victim_id = v.get('victim_id', v.get('id', 'unknown'))
-            fleet.update_victim(v)
+            injury = str(v.get('injury_severity', v.get('severity', 'moderate'))).lower()
+            sev_map = {'critical': 95, 'severe': 75, 'moderate': 50, 'minor': 25}
+            normalized = {
+                "id": victim_id,
+                "position": v.get("position", (0.0, 0.0, 0.0)),
+                "severity": sev_map.get(injury, 50),
+                "triage_score": sev_map.get(injury, 50),
+                "status": "assigned" if v.get("assigned_drone") else "discovered",
+                "assigned_drone_id": v.get("assigned_drone"),
+                "assigned_mission_id": v.get("mission_id"),
+            }
+            fleet.update_victim(normalized)
         
         state_agent.ingest_raw_drone_data(drone_snapshots)
         
         completed_missions = env.get_completed_missions()
         for mission_id in completed_missions:
-            fleet.update_mission_status(mission_id, 'COMPLETED')
+            fleet.update_mission_status(mission_id, MissionStatus.COMPLETED)
             if True:
                 print(f"[Dashboard] Mission {mission_id} marked as completed in FleetState")
         
@@ -95,15 +132,15 @@ def create_new_assignments():
     coordinator = st.session_state.coordinator
     
     victim_objs = list(fleet.victims.values())
-    available_victims = [v for v in victim_objs if 0 <= env.tick and v.assigned_drone_id is None]
-    
+    available_victims = [
+        v for v in victim_objs
+        if v.assigned_drone_id is None and str(v.status).lower() not in ("rescued", "completed")
+    ]
+
     if available_victims:
         victim_dicts = [{"victim_id": v.id, "severity": str(v.severity), "score": v.triage_score, "position": list(v.position)} for v in available_victims]
         assignments = coordinator.decide_dispatch(victim_dicts)
-        for assignment in assignments:
-            if assignment.get("victim_id"):
-                env.update_victim_assignment(assignment.get("victim_id"), assignment.get("drone_id"), assignment.get("mission_id", "m1"))
-            env.update_drone_mission(assignment.get("drone_id"), assignment.get("mission_id", "m1"))
+        coordinator.execute_dispatch(assignments, env)
 
 def load_ai_decisions() -> List[Dict[str, Any]]:
     """Load AI decisions from JSON file."""
@@ -120,6 +157,97 @@ def load_ai_decisions() -> List[Dict[str, Any]]:
         except (json.JSONDecodeError, IOError) as e:
             print(f"[Dashboard] Error loading AI decisions: {e}")
     return []
+
+
+def _build_ops_context(env, fleet) -> Dict[str, Any]:
+    """Build compact operational context for LLM dashboard briefing."""
+    drones = []
+    for d in fleet.drones.values():
+        status = d.status.value if hasattr(d.status, "value") else str(d.status)
+        drones.append({
+            "id": d.id,
+            "status": status,
+            "battery": round(float(d.battery), 1),
+            "mission_id": d.current_mission_id,
+            "position": list(d.position),
+        })
+
+    victims = []
+    for v in fleet.victims.values():
+        victims.append({
+            "id": v.id,
+            "severity": v.severity,
+            "triage_score": v.triage_score,
+            "status": v.status,
+            "assigned_drone_id": v.assigned_drone_id,
+        })
+
+    return {
+        "tick": getattr(env, "tick", 0),
+        "drones": drones,
+        "victims": victims,
+        "active_missions": len([m for m in fleet.missions.values() if str(getattr(m.status, "value", m.status)).lower() in ("active", "pending")]),
+    }
+
+
+def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
+    """
+    Ask LLM for operational dashboard briefing.
+    Falls back to deterministic summary if LLM unavailable.
+    """
+    context = _build_ops_context(env, fleet)
+    settings = Settings()
+    api_key = settings.deepseek.deepseek_api_key
+    base_url = settings.deepseek.deepseek_base_url
+    model = settings.deepseek.deepseek_model
+
+    fallback = {
+        "headline": "Autonomous Ops Brief",
+        "priority_actions": [
+            "Keep critical victims prioritized for nearest available drones.",
+            "Route low-battery drones toward charging after mission completion.",
+            "Maintain at least one standby drone for sudden incidents."
+        ],
+        "alerts": [],
+        "confidence": "fallback"
+    }
+
+    if not api_key or api_key == "YOUR_API_KEY_HERE":
+        return fallback
+
+    prompt = (
+        "You are RescueNet operations AI. Return strict JSON with keys: "
+        "headline (string), priority_actions (array of 3 short strings), "
+        "alerts (array of short strings), confidence (string). "
+        "Context: " + json.dumps(context)
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You generate concise emergency-ops dashboard summaries in strict JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 250,
+    }
+    try:
+        r = requests.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=4,
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
+        start_idx = content.find("{")
+        end_idx = content.rfind("}")
+        if start_idx != -1 and end_idx != -1:
+            parsed = json.loads(content[start_idx:end_idx+1])
+            if isinstance(parsed, dict):
+                return parsed
+    except Exception:
+        pass
+    return fallback
 
 def get_battery_color(battery: float) -> str:
     """Return color for battery percentage."""
@@ -189,14 +317,26 @@ def main():
     status_badge = "🟢 Running" if st.session_state.get('system_status') == 'running' else "🔴 Offline"
     st.markdown(f"# 🚁 RescueNet AI - Live Dashboard <span style='font-size: 16px; margin-left: 20px;'>{status_badge}</span>", unsafe_allow_html=True)
     st.markdown("---")
+
+    # AI operational overlay
+    st.subheader("🧠 AI Operations Brief")
+    ai_brief = generate_ai_dashboard_brief(env, fleet)
+    st.markdown(f"**{ai_brief.get('headline', 'Autonomous Ops Brief')}**")
+    for item in ai_brief.get("priority_actions", [])[:3]:
+        st.markdown(f"- {item}")
+    alerts = ai_brief.get("alerts", []) or []
+    if alerts:
+        st.warning(" | ".join(alerts[:3]))
+    st.caption(f"AI brief mode: {ai_brief.get('confidence', 'unknown')}")
+    st.markdown("---")
     
     # Calculate metrics
     total_drones = len(fleet.drones) if fleet else 0
-    available_drones = len([d for d in fleet.drones.values() if d.status == 'available']) if fleet else 0
+    available_drones = len([d for d in fleet.drones.values() if d.status == DroneStatus.AVAILABLE]) if fleet else 0
     active_missions = len([d for d in fleet.drones.values() if d.current_mission_id is not None]) if fleet else 0
     
     victims_detected = len(fleet.victims) if fleet else 0
-    victims_rescued = len([v for v in fleet.victims.values() if v.assigned_drone_id is None and 0 <= env.tick]) if fleet else 0
+    victims_rescued = len([v for v in fleet.victims.values() if str(v.status).lower() in ("rescued", "completed")]) if fleet else 0
     
     # Top metrics row
     st.subheader("📊 Fleet Overview")
@@ -225,12 +365,12 @@ def main():
             for drone_id, drone in fleet.drones.items():
                 drone_data.append({
                     "Drone ID": drone.id,
-                    "Status": drone.status,
+                    "Status": drone.status.value if hasattr(drone.status, "value") else str(drone.status),
                     "Battery": f"{drone.battery:.1f}%",
                     
                     "Mission": drone.current_mission_id if drone.current_mission_id else "None",
                     "Position": f"({drone.position[0]:.1f}, {drone.position[1]:.1f})",
-                    "Health": drone.status
+                    "Health": drone.status.value if hasattr(drone.status, "value") else str(drone.status)
                 })
             
             df = pd.DataFrame(drone_data)
@@ -271,7 +411,7 @@ def main():
         # Check for low battery drones
         low_battery_drones = [d for d in fleet.drones.values() if d.battery <= 25] if fleet else []
         # Check for drones with mechanical issues
-        unhealthy_drones = [d for d in fleet.drones.values() if d.status in ['unavailable_fault', 'fault']] if fleet else []
+        unhealthy_drones = [d for d in fleet.drones.values() if str(getattr(d.status, "value", d.status)).lower() in ['unavailable_fault', 'fault']] if fleet else []
         
         alerts = []
         for drone in low_battery_drones:
@@ -378,13 +518,31 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Controls")
+        is_demo = runtime_mode == "DEMO"
+        if is_demo:
+            st.subheader("🧪 Demo Scenario")
+            st.session_state.demo_num_drones = st.number_input(
+                "Demo drones",
+                min_value=1,
+                max_value=100,
+                value=int(st.session_state.get('demo_num_drones', len(fleet.drones) if fleet else 3)),
+                step=1,
+            )
+            st.session_state.demo_num_victims = st.number_input(
+                "Demo victims",
+                min_value=1,
+                max_value=200,
+                value=int(st.session_state.get('demo_num_victims', len(fleet.victims) if fleet else 4)),
+                step=1,
+            )
+            st.caption("Use Reset Simulation to apply these demo counts.")
         
         # Refresh rate slider
         refresh_rate = st.slider("Refresh Rate (seconds)", min_value=1, max_value=10, value=2, help="Auto-refresh interval")
         st.session_state.refresh_interval = refresh_rate
         
         # Mode indicator
-        mode_color = "green" if runtime_mode == "DEMO" else "blue"
+        mode_color = "1f7a1f" if runtime_mode == "DEMO" else "1f4e8a"
         st.markdown(f"""
         <div style='padding: 10px; background-color: #{mode_color}; border-radius: 5px; text-align: center;'>
             <strong>Mode: {runtime_mode}
@@ -402,6 +560,33 @@ def main():
         
         # Manual controls
         st.subheader("🔧 Manual Controls")
+        if is_demo:
+            quick1, quick2 = st.columns(2)
+            with quick1:
+                if st.button("➕ Add Drone"):
+                    try:
+                        if hasattr(st.session_state.env, "add_drone"):
+                            new_drone_id = st.session_state.env.add_drone()
+                            st.success(f"Added {new_drone_id}")
+                            update_fleet_from_env()
+                            st.rerun()
+                        else:
+                            st.warning("Current environment does not support runtime drone creation.")
+                    except Exception as e:
+                        st.error(f"Error adding drone: {e}")
+            with quick2:
+                if st.button("➕ Add Victim"):
+                    try:
+                        if hasattr(st.session_state.env, "add_victim"):
+                            new_victim_id = st.session_state.env.add_victim()
+                            st.success(f"Added {new_victim_id}")
+                            update_fleet_from_env()
+                            st.rerun()
+                        else:
+                            st.warning("Current environment does not support runtime victim creation.")
+                    except Exception as e:
+                        st.error(f"Error adding victim: {e}")
+            st.caption("New victims are auto-dispatched when free drones are available.")
         
         if st.button("Step Simulation"):
             try:
@@ -413,8 +598,18 @@ def main():
         
         if st.button("Reset Simulation"):
             try:
-                st.session_state.env = get_environment()
-                st.session_state.fleet = FleetState(['drone_1', 'drone_2', 'drone_3'])
+                if runtime_mode == "DEMO":
+                    st.session_state.env = MockDisasterEnv(
+                        num_drones=int(st.session_state.get('demo_num_drones', 3)),
+                        num_victims=int(st.session_state.get('demo_num_victims', 4)),
+                    )
+                else:
+                    st.session_state.env = get_environment()
+                fleet, state_agent, coordinator, triage = _build_runtime_components(st.session_state.env)
+                st.session_state.fleet = fleet
+                st.session_state.state_agent = state_agent
+                st.session_state.coordinator = coordinator
+                st.session_state.triage = triage
                 update_fleet_from_env()
                 st.session_state.start_time = time.time()
                 st.rerun()
