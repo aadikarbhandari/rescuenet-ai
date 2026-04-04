@@ -128,6 +128,10 @@ If `RESCUENET_API_KEY` is set, REST endpoints (except health/docs) require:
 Ops reliability metrics endpoint:
 - `GET /ops/metrics`
 
+Production validation harness (Pass 6):
+- `python scripts/release_gate.py`
+- Runs compile checks, validation tests, and a 1-tick demo smoke test.
+
 ## Running the Dashboard
 
 The dashboard is fully self-contained — it runs its own simulation loop internally and does not require `main.py` to be running.
