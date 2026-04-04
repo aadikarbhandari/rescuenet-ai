@@ -3,6 +3,7 @@
 ## Folder/File Structure
 - `.gitignore`
 - `AUDIT_NOTES.md`
+- `CODEBASE_BRIEF.md`
 - `PHASE2_SUMMARY.md`
 - `PRODUCTION_PASS_PLAN.md`
 - `README.md`
@@ -10,6 +11,7 @@
 - `agents/__init__.py`
 - `agents/coordinator.py`
 - `agents/perception.py`
+- `agents/policy_engine.py`
 - `agents/routing.py`
 - `agents/security.py`
 - `agents/state_awareness.py`
@@ -24,6 +26,8 @@
 - `dashboard/__init__.py`
 - `dashboard/app.py`
 - `dashboard/dash.py`
+- `integration/__init__.py`
+- `integration/adapters.py`
 - `main.py`
 - `requirements.txt`
 - `simulation/__init__.py`
@@ -41,6 +45,7 @@
 ## What each file does (concise)
 - `.gitignore` — Project config/docs/dependencies.
 - `AUDIT_NOTES.md` — Project config/docs/dependencies.
+- `CODEBASE_BRIEF.md` — Project config/docs/dependencies.
 - `PHASE2_SUMMARY.md` — Project config/docs/dependencies.
 - `PRODUCTION_PASS_PLAN.md` — Project config/docs/dependencies.
 - `README.md` — Project config/docs/dependencies.
@@ -48,6 +53,7 @@
 - `agents/__init__.py` — Python module.
 - `agents/coordinator.py` — RescueNet AI - Coordinator Agent (classes: CoordinatorAgent)
 - `agents/perception.py` — Vision + acoustic detection
+- `agents/policy_engine.py` — RescueNet Policy Engine (classes: PolicyConfig, PolicyEngine)
 - `agents/routing.py` — Navigation + jamming fallback
 - `agents/security.py` — Python module. (classes: AlertSeverity, AlertType, SecurityAlert, SecurityAgent; functions: check_for_spoofing, get_security_alerts, log_security_event)
 - `agents/state_awareness.py` — CRITICAL - live fleet state + decision helpers (classes: StateAwarenessAgent)
@@ -60,9 +66,11 @@
 - `config.json` — Project config/docs/dependencies.
 - `config.py` — Python module.
 - `dashboard/__init__.py` — Python module.
-- `dashboard/app.py` — Python module. (functions: init_system, update_fleet_from_env, create_new_assignments, load_ai_decisions, get_battery_color)
+- `dashboard/app.py` — Python module. (functions: init_system, update_fleet_from_env, create_new_assignments, load_ai_decisions, _build_ops_context)
 - `dashboard/dash.py` — Python module. (functions: call_glm, main)
-- `main.py` — RescueNet AI - Main Entry Point (functions: setup_logging, print_startup_banner, print_tick_summary, land_all_drones, main)
+- `integration/__init__.py` — Integration layer for vendor-specific drone and sensor adapters.
+- `integration/adapters.py` — Vendor adapter contracts + registry. (classes: NormalizedDrone, NormalizedVictimSignal, DroneAdapter, SensorAdapter, AdapterRegistry)
+- `main.py` — RescueNet AI - Main Entry Point (functions: setup_logging, print_startup_banner, print_tick_summary, land_all_drones, normalize_victim_snapshot)
 - `requirements.txt` — Project config/docs/dependencies.
 - `simulation/__init__.py` — Python module.
 - `simulation/airsim_adapter/__init__.py` — AirSim adapter package for RescueNet AI.

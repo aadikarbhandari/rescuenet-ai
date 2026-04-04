@@ -16,6 +16,7 @@ from state.fleet_state import FleetState, DroneStatus, MissionStatus
 from agents.triage import TriageAgent
 from agents.coordinator import CoordinatorAgent
 from agents.security import SecurityAgent
+from agents.policy_engine import PolicyEngine, PolicyConfig
 from api.server import run_server_background, update_state
 
 
@@ -161,6 +162,13 @@ def main():
     
     security_agent = SecurityAgent(settings)
     logger.info("SecurityAgent initialized")
+    policy_engine = PolicyEngine(
+        PolicyConfig(
+            min_battery_for_new_mission=25.0,
+            min_reserve_available_drones=1
+        )
+    )
+    logger.info("PolicyEngine initialized")
     
     # Start API server in background
     if settings.api_enabled:
@@ -198,6 +206,7 @@ def main():
             
             # Coordinator: decide dispatch
             assignments = coordinator.decide_dispatch(triage_results)
+            assignments = policy_engine.filter_assignments(assignments, fleet)
             
             # Execute dispatch
             new_assignments = 0
