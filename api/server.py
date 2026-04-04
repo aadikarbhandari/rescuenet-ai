@@ -1,4 +1,6 @@
 import os
+import hashlib
+import hmac
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,6 +25,8 @@ app.add_middleware(
 
 # Global state
 _state_lock = threading.Lock()
+_rate_lock = threading.Lock()
+_rate_state: Dict[str, List[float]] = {}
 _state: Dict[str, Any] = {
     "mode": "idle",
     "tick": 0,
@@ -51,6 +55,33 @@ def _api_key_required() -> bool:
     return bool(os.getenv("RESCUENET_API_KEY"))
 
 
+def _expected_api_keys() -> List[str]:
+    raw = os.getenv("RESCUENET_API_KEY", "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _key_matches(expected: str, provided: str) -> bool:
+    if expected.startswith("sha256:"):
+        digest = hashlib.sha256((provided or "").encode("utf-8")).hexdigest()
+        return hmac.compare_digest(expected[len("sha256:"):], digest)
+    return hmac.compare_digest(expected, provided or "")
+
+
+def _is_rate_limited(client_ip: str) -> bool:
+    limit = int(os.getenv("RESCUENET_RATE_LIMIT_PER_MIN", "120"))
+    if limit <= 0:
+        return False
+    now = time.time()
+    with _rate_lock:
+        window = [ts for ts in _rate_state.get(client_ip, []) if now - ts <= 60.0]
+        if len(window) >= limit:
+            _rate_state[client_ip] = window
+            return True
+        window.append(now)
+        _rate_state[client_ip] = window
+        return False
+
+
 def _extract_api_key(request: Request) -> Optional[str]:
     x_api_key = request.headers.get("x-api-key")
     if x_api_key:
@@ -72,9 +103,16 @@ async def api_key_auth_middleware(request: Request, call_next):
     if request.url.path in public_paths or not _api_key_required():
         return await call_next(request)
 
-    expected = os.getenv("RESCUENET_API_KEY")
+    client_ip = request.client.host if request.client else "unknown"
+    if _is_rate_limited(client_ip):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again shortly."},
+        )
+
+    expected_keys = _expected_api_keys()
     provided = _extract_api_key(request)
-    if not provided or provided != expected:
+    if not provided or not any(_key_matches(expected, provided) for expected in expected_keys):
         with _state_lock:
             _state.setdefault("security_alerts", []).append({
                 "timestamp": datetime.now().isoformat(),

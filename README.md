@@ -89,7 +89,8 @@ Key dependencies: `fastapi`, `uvicorn`, `streamlit`, `pandas`, `requests`
 | `DEEPSEEK_BASE_URL` | API endpoint | Vultr inference |
 | `DEEPSEEK_MODEL` | Model name | DeepSeek-V3.2 |
 | `RUNTIME_MODE` | `DEMO`, `AIRSIM`, or `SIM` | `DEMO` |
-| `RESCUENET_API_KEY` | Optional API key for protecting REST endpoints | Unset (auth off) |
+| `RESCUENET_API_KEY` | Optional API key for REST auth (`key` or `sha256:<digest>`, comma-separated keys supported) | Unset (auth off) |
+| `RESCUENET_RATE_LIMIT_PER_MIN` | Optional per-IP limit for protected endpoints | `120` |
 
 4. Optional: register vendor adapters in `config.json`:
 ```json
@@ -139,6 +140,7 @@ Production validation harness (Pass 6):
 - Pass 9 adds MVP perception/routing tests under `tests/test_pass9_agent_mvp.py`.
 - Pass 10 adds persistence tests under `tests/test_pass10_persistence.py`.
 - Pass 11 adds observability percentile tests under `tests/test_pass11_observability.py`.
+- Pass 12 adds API hardening tests under `tests/test_pass12_api_hardening.py`.
 
 ## Running the Dashboard
 
