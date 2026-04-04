@@ -348,6 +348,46 @@ Return ONLY valid JSON object, no markdown/code fences/no extra text."""
             logger.debug(f"JSON repair pass failed: {e}")
         return None
 
+    def _attempt_json_repair(self, raw_content: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Ask LLM to repair malformed JSON payload into expected triage schema."""
+        if not raw_content:
+            return None
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._api_key}"
+            }
+            repair_prompt = (
+                "Convert the following text into a valid JSON object with keys: "
+                "score, priority, reasoning, recommended_action. Return JSON only.\n\n"
+                f"INPUT:\n{raw_content}"
+            )
+            payload = {
+                "model": self._model,
+                "messages": [
+                    {"role": "system", "content": "You only output valid JSON object."},
+                    {"role": "user", "content": repair_prompt}
+                ],
+                "temperature": 0.0,
+                "max_tokens": 220
+            }
+            response = requests.post(
+                f"{self._base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=12
+            )
+            if response.status_code == 200:
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                parsed = self._parse_llm_response(content)
+                if parsed is not None:
+                    logger.info("Recovered triage response using JSON repair pass.")
+                return parsed
+        except Exception as e:
+            logger.debug(f"JSON repair pass failed: {e}")
+        return None
+
     def score_victim_llm(self, victim: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Use DeepSeek to score a single victim. Returns score + reasoning.
