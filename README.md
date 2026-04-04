@@ -29,8 +29,8 @@ Multi-Agent AI Layer
   ├── Triage Agent         — Victim prioritization scoring
   ├── Security Agent       — GPS spoofing & jamming detection
   ├── State Awareness      — Fleet state management
-  ├── Perception           — Vision/acoustic detection (stub)
-  ├── Routing              — Navigation (stub)
+  ├── Perception           — MVP victim detection scoring from telemetry/snapshots
+  ├── Routing              — MVP safe-altitude routes + jamming fallback route mode
   └── Voice                — NVIDIA PersonaPlex integration (stub)
 
 Control & Integration Layer
@@ -53,8 +53,8 @@ rescuenet-ai/
 │   ├── triage.py            # Victim prioritization scoring
 │   ├── security.py          # GPS spoofing & jamming detection
 │   ├── state_awareness.py   # Fleet state management
-│   ├── perception.py        # Vision/acoustic detection (stub)
-│   ├── routing.py           # Navigation (stub)
+│   ├── perception.py        # MVP perception (distance + sensor confidence model)
+│   ├── routing.py           # MVP routing (safe altitude + jam fallback)
 │   └── voice.py             # PersonaPlex integration (stub)
 ├── api/
 │   └── server.py            # FastAPI REST server
@@ -133,6 +133,7 @@ Production validation harness (Pass 6):
 - Runs compile checks, validation tests, and a 1-tick demo smoke test.
 - CI workflow (`.github/workflows/release-gate.yml`) runs the same gate on pull requests and main/work pushes.
 - Pass 8 adds API/reliability integration tests under `tests/test_pass8_integration.py`.
+- Pass 9 adds MVP perception/routing tests under `tests/test_pass9_agent_mvp.py`.
 
 ## Running the Dashboard
 
@@ -201,7 +202,7 @@ Click the reset button in the sidebar, or restart streamlit.
 
 ## Known Limitations
 
-- **Perception / Routing / Voice** — stub modules, pending implementation
+- **Voice** — stub module, pending implementation
 - **victim_4 stays unassigned** — correct behavior; only 3 drones available for 4 victims, the lowest-priority victim waits until a drone is free
 - **AirSim Integration** — full drone command execution requires Unreal Engine + GPU
 - **Thread Safety** — global state in the API server is not thread-safe under concurrent load
