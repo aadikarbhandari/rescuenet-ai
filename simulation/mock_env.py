@@ -33,6 +33,7 @@ class MockDisasterEnv(Environment):
         self._init_drones()
         self._init_targets()  # Initializes victims or checkpoints based on mode
         self._init_weather()
+        self._init_stations()
         # Track active missions: mission_id -> {"start_tick": int, "duration_ticks": int, "drone_id": str, "victim_id": str}
         self.active_missions = {}
         # Track missions that completed in the last step
@@ -184,6 +185,14 @@ class MockDisasterEnv(Environment):
         self.visibility = 1000.0
         self.wind_speed = 3.0
         self.temperature = 22.0
+
+    def _init_stations(self):
+        """Initialize mock rescue/charging stations for dashboard and ops views."""
+        self.rescue_stations = [
+            {"name": "Station Alpha", "x": 0.0, "y": 0.0, "z": 0.0, "supplies": {"first_aid_kit": 40, "water": 80, "food": 60}, "charging_slots": 12},
+            {"name": "Station Beta", "x": 120.0, "y": 40.0, "z": 0.0, "supplies": {"first_aid_kit": 35, "water": 70, "food": 55}, "charging_slots": 10},
+            {"name": "Station Gamma", "x": -90.0, "y": 60.0, "z": 0.0, "supplies": {"first_aid_kit": 45, "water": 90, "food": 75}, "charging_slots": 14},
+        ]
 
     def get_current_mode(self) -> str:
         """Return the current operational mode."""
@@ -580,6 +589,9 @@ class MockDisasterEnv(Environment):
                 del self.active_missions[mission_id]
                 self.recently_completed_missions.append(mission_id)
 
+        # Refresh station occupancy based on charging drones at/near base.
+        self._update_station_occupancy()
+
         # Target condition updates
         for target in self.targets:
             if self._current_mode == "rescue":
@@ -665,3 +677,30 @@ class MockDisasterEnv(Environment):
                 "battery_level": d.get("battery_percent", 0.0),
             })
         return telemetry
+
+    def _update_station_occupancy(self):
+        """Refresh per-station drone presence for dashboard station panel."""
+        for stn in self.rescue_stations:
+            stn["drones_present"] = []
+        if not self.rescue_stations:
+            return
+        primary = self.rescue_stations[0]
+        for d in self.drones:
+            if d.get("operational_status") == "charging":
+                primary["drones_present"].append(d.get("drone_id"))
+
+    def get_station_status(self) -> List[Dict[str, Any]]:
+        """Return station status in a dashboard/API-friendly format."""
+        self._update_station_occupancy()
+        rows = []
+        for stn in self.rescue_stations:
+            rows.append({
+                "name": stn.get("name"),
+                "x": stn.get("x", 0.0),
+                "y": stn.get("y", 0.0),
+                "z": stn.get("z", 0.0),
+                "supplies": dict(stn.get("supplies", {})),
+                "charging_slots": int(stn.get("charging_slots", 0)),
+                "drones_present": list(stn.get("drones_present", [])),
+            })
+        return rows

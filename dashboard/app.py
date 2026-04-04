@@ -31,6 +31,31 @@ def _build_runtime_components(env):
     triage = TriageAgent()
     return fleet, state_agent, coordinator, triage
 
+
+def _station_panel_data(env) -> List[Dict[str, Any]]:
+    """Build station table rows from env when available, with safe fallback."""
+    if hasattr(env, "get_station_status"):
+        try:
+            rows = []
+            for stn in env.get_station_status():
+                supplies = stn.get("supplies", {})
+                remaining = sum(v for v in supplies.values() if isinstance(v, (int, float)))
+                rows.append({
+                    "Station": stn.get("name", "Station"),
+                    "Supplies Remaining": int(remaining),
+                    "Charging Slots": int(stn.get("charging_slots", 0)),
+                    "Drones Present": len(stn.get("drones_present", [])),
+                })
+            if rows:
+                return rows
+        except Exception:
+            pass
+    return [
+        {"Station": "Station Alpha", "Supplies Remaining": 85, "Charging Slots": 4, "Drones Present": 2},
+        {"Station": "Station Beta", "Supplies Remaining": 60, "Charging Slots": 2, "Drones Present": 3},
+        {"Station": "Station Gamma", "Supplies Remaining": 92, "Charging Slots": 6, "Drones Present": 1},
+    ]
+
 # Initialize the environment and agents in session state
 def init_system():
     """Create mock environment, fleet state, and agents."""
@@ -49,7 +74,7 @@ def init_system():
             st.session_state.refresh_interval = 2.0
             st.session_state.system_status = "running"
             st.session_state.demo_num_drones = st.session_state.get('demo_num_drones', len(fleet.drones))
-            st.session_state.demo_num_victims = st.session_state.get('demo_num_victims', 4)
+            st.session_state.demo_num_victims = st.session_state.get('demo_num_victims', len(st.session_state.env.get_victim_snapshots()))
             
             update_fleet_from_env()
             
@@ -310,7 +335,7 @@ def main():
     if hasattr(env, '__class__'):
         if 'MockDisasterEnv' in env.__class__.__name__:
             runtime_mode = "DEMO"
-        elif 'AirSimEnvironment' in env.__class__.__name__:
+        elif 'AirSimEnvironment' in env.__class__.__name__ or 'AirSimEnv' in env.__class__.__name__:
             runtime_mode = "SIM"
     
     # Header with title and system status badge
@@ -394,12 +419,17 @@ def main():
         if fleet and fleet.drones:
             active_mission_list = [(d_id, d) for d_id, d in fleet.drones.items() if d.current_mission_id is not None]
             if active_mission_list:
-                for drone_id, drone in active_mission_list:
-                    st.markdown(f"""
-                    <div style='padding: 10px; margin: 5px 0; background-color: #1E3A5F; border-radius: 5px;'>
-                        <strong>🛸 {drone_id}</strong><br>
-                        <span style='color: #AAAAAA;'>Mission: {drone.current_mission_id}
-                    """, unsafe_allow_html=True)
+                st.caption(f"{len(active_mission_list)} active missions")
+                mission_rows = [{
+                    "Drone": drone_id,
+                    "Mission": drone.current_mission_id,
+                    "Battery": f"{drone.battery:.1f}%",
+                } for drone_id, drone in active_mission_list]
+                preview = mission_rows[:25]
+                st.dataframe(pd.DataFrame(preview), use_container_width=True, hide_index=True, height=280)
+                if len(mission_rows) > 25:
+                    with st.expander(f"Show all {len(mission_rows)} active missions"):
+                        st.dataframe(pd.DataFrame(mission_rows), use_container_width=True, hide_index=True, height=420)
             else:
                 st.info("No active missions")
         
@@ -491,12 +521,7 @@ def main():
     # Rescue Stations Panel
     st.subheader("🏭 Rescue Stations Panel")
     
-    # Simulated rescue station data (would come from environment in real system)
-    station_data = [
-        {"Station": "Station Alpha", "Supplies Remaining": 85, "Charging Slots": 4, "Drones Present": 2},
-        {"Station": "Station Beta", "Supplies Remaining": 60, "Charging Slots": 2, "Drones Present": 3},
-        {"Station": "Station Gamma", "Supplies Remaining": 92, "Charging Slots": 6, "Drones Present": 1},
-    ]
+    station_data = _station_panel_data(env)
     
     df_stations = pd.DataFrame(station_data)
     
@@ -521,21 +546,38 @@ def main():
         is_demo = runtime_mode == "DEMO"
         if is_demo:
             st.subheader("🧪 Demo Scenario")
+            prev_drones = int(st.session_state.get('demo_num_drones', len(fleet.drones) if fleet else 3))
+            prev_victims = int(st.session_state.get('demo_num_victims', len(fleet.victims) if fleet else 4))
             st.session_state.demo_num_drones = st.number_input(
                 "Demo drones",
                 min_value=1,
                 max_value=100,
-                value=int(st.session_state.get('demo_num_drones', len(fleet.drones) if fleet else 3)),
+                value=prev_drones,
                 step=1,
             )
             st.session_state.demo_num_victims = st.number_input(
                 "Demo victims",
                 min_value=1,
                 max_value=200,
-                value=int(st.session_state.get('demo_num_victims', len(fleet.victims) if fleet else 4)),
+                value=prev_victims,
                 step=1,
             )
-            st.caption("Use Reset Simulation to apply these demo counts.")
+            st.caption("Counts apply instantly with 'Apply Scenario'. Reset also applies and clears mission state.")
+            if st.button("Apply Scenario", type="primary"):
+                try:
+                    st.session_state.env = MockDisasterEnv(
+                        num_drones=int(st.session_state.get('demo_num_drones', 3)),
+                        num_victims=int(st.session_state.get('demo_num_victims', 4)),
+                    )
+                    fleet, state_agent, coordinator, triage = _build_runtime_components(st.session_state.env)
+                    st.session_state.fleet = fleet
+                    st.session_state.state_agent = state_agent
+                    st.session_state.coordinator = coordinator
+                    st.session_state.triage = triage
+                    update_fleet_from_env()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error applying scenario: {e}")
         
         # Refresh rate slider
         refresh_rate = st.slider("Refresh Rate (seconds)", min_value=1, max_value=10, value=2, help="Auto-refresh interval")
