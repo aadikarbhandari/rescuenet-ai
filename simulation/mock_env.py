@@ -24,9 +24,11 @@ class MockDisasterEnv(Environment):
         }
     }
 
-    def __init__(self, seed: int = 42, initial_mode: str = "rescue"):
+    def __init__(self, seed: int = 42, initial_mode: str = "rescue", num_drones: int = 3, num_victims: int = 4):
         self.rng = random.Random(seed)
         self._tick = 0
+        self.num_drones = max(1, int(num_drones))
+        self.num_victims = max(1, int(num_victims))
         self._current_mode = initial_mode if initial_mode in self.MODES else "rescue"
         self._init_drones()
         self._init_targets()  # Initializes victims or checkpoints based on mode
@@ -42,51 +44,24 @@ class MockDisasterEnv(Environment):
         return self._tick
 
     def _init_drones(self):
-        """Create 3 drones with deterministic initial states."""
-        self.drones = [
-            {
-                "drone_id": "drone_1",
-                "battery_percent": 95.0,
-                "mechanical_health": "ok",
-                "sensor_status": {"rgb": "ok", "thermal": "ok", "lidar": "ok"},
-                "payload_kg": 0.0,
-                "winch_status": "ready",
-                "position": (10.0, 20.0, 5.0),
-                "wind_speed_ms": 2.5,
-                "temperature_c": 22.0,
-                "visibility_m": 1000.0,
+        """Create N drones with deterministic initial states."""
+        self.drones = []
+        for i in range(self.num_drones):
+            sensor_quality = ["ok", "degraded", "ok"][i % 3]
+            self.drones.append({
+                "drone_id": f"drone_{i+1}",
+                "battery_percent": max(45.0, 98.0 - i * 3.0),
+                "mechanical_health": "degraded" if i % 7 == 3 else "ok",
+                "sensor_status": {"rgb": "ok", "thermal": sensor_quality, "lidar": "ok" if i % 5 else "degraded"},
+                "payload_kg": round((i % 4) * 0.6, 1),
+                "winch_status": "fault" if i % 11 == 7 else "ready",
+                "position": (10.0 + i * 8.0, 20.0 + ((i * 13) % 70), 5.0 + (i % 4)),
+                "wind_speed_ms": 2.5 + (i % 4) * 0.4,
+                "temperature_c": 22.0 + (i % 3) * 0.3,
+                "visibility_m": 1200.0 - (i % 5) * 80.0,
                 "current_mission": None,
                 "operational_status": "idle"
-            },
-            {
-                "drone_id": "drone_2",
-                "battery_percent": 80.0,
-                "mechanical_health": "degraded",
-                "sensor_status": {"rgb": "ok", "thermal": "degraded", "lidar": "ok"},
-                "payload_kg": 1.5,
-                "winch_status": "ready",
-                "position": (30.0, 40.0, 10.0),
-                "wind_speed_ms": 3.0,
-                "temperature_c": 21.5,
-                "visibility_m": 800.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            },
-            {
-                "drone_id": "drone_3",
-                "battery_percent": 60.0,
-                "mechanical_health": "ok",
-                "sensor_status": {"rgb": "ok", "thermal": "ok", "lidar": "degraded"},
-                "payload_kg": 0.8,
-                "winch_status": "fault",
-                "position": (50.0, 10.0, 8.0),
-                "wind_speed_ms": 4.2,
-                "temperature_c": 23.0,
-                "visibility_m": 1200.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            }
-        ]
+            })
 
     def _init_targets(self):
         """Initialize targets (victims or checkpoints) based on current mode."""
@@ -96,73 +71,28 @@ class MockDisasterEnv(Environment):
             self._init_checkpoints()
 
     def _init_victims(self):
-        """Create 2‑4 victims with deterministic initial conditions."""
-        self.victims = [
-            {
-                "victim_id": "victim_1",
+        """Create configurable victims with deterministic initial conditions."""
+        severity_cycle = ["critical", "severe", "moderate", "minor"]
+        bleeding_cycle = {"critical": "severe", "severe": "moderate", "moderate": "mild", "minor": "none"}
+        self.victims = []
+        for i in range(self.num_victims):
+            severity = severity_cycle[i % len(severity_cycle)]
+            self.victims.append({
+                "victim_id": f"victim_{i+1}",
                 "is_confirmed": False,
-                "position": (15.0, 25.0, 0.0),
-                "injury_severity": "critical",
+                "position": (15.0 + (i * 11) % 90, 8.0 + (i * 17) % 90, 0.0),
+                "injury_severity": severity,
                 "detected_by": "none",
                 "first_detected_tick": 0,
                 "detection_confidence": 0.0,
                 "assigned_drone": None,
                 "mission_id": None,
                 "cooldown_until_tick": 0,
-                "conscious": False,
-                "bleeding": "severe",
-                "body_temperature_c": 34.5,
-                "accessibility": 0.3
-            },
-            {
-                "victim_id": "victim_2",
-                "is_confirmed": False,
-                "position": (35.0, 45.0, 0.0),
-                "injury_severity": "moderate",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "mild",
-                "body_temperature_c": 36.8,
-                "accessibility": 0.8
-            },
-            {
-                "victim_id": "victim_3",
-                "is_confirmed": False,
-                "position": (55.0, 15.0, 0.0),
-                "injury_severity": "severe",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "moderate",
-                "body_temperature_c": 38.2,
-                "accessibility": 0.5
-            },
-            {
-                "victim_id": "victim_4",
-                "is_confirmed": False,
-                "position": (25.0, 5.0, 0.0),
-                "injury_severity": "minor",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "none",
-                "body_temperature_c": 37.0,
-                "accessibility": 0.9
-            }
-        ]
+                "conscious": severity not in ("critical",),
+                "bleeding": bleeding_cycle[severity],
+                "body_temperature_c": 34.5 if severity == "critical" else (38.0 if severity == "severe" else 36.9),
+                "accessibility": max(0.2, 0.95 - (i % 7) * 0.1)
+            })
         # Alias for consistent access
         self.targets = self.victims
 
