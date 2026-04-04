@@ -200,6 +200,22 @@ Return ONLY valid JSON object, no markdown/code fences/no extra text."""
             "Authorization": f"Bearer {self._api_key}"
         }
         
+        json_schema = {
+            "name": "triage_assessment",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "score": {"type": "number"},
+                    "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    "reasoning": {"type": "string"},
+                    "recommended_action": {"type": "string", "enum": ["extract", "deliver_supplies", "scout", "monitor"]},
+                },
+                "required": ["score", "priority", "reasoning", "recommended_action"],
+                "additionalProperties": True
+            },
+            "strict": True
+        }
+
         payload = {
             "model": self._model,
             "messages": [
@@ -207,7 +223,8 @@ Return ONLY valid JSON object, no markdown/code fences/no extra text."""
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.3,  # Low temperature for consistent triage decisions
-            "max_tokens": 500
+            "max_tokens": 500,
+            "response_format": {"type": "json_schema", "json_schema": json_schema}
         }
         
         for attempt in range(max_retries):
@@ -223,7 +240,17 @@ Return ONLY valid JSON object, no markdown/code fences/no extra text."""
                     data = response.json()
                     if 'choices' in data and len(data['choices']) > 0:
                         content = data['choices'][0].get('message', {}).get('content')
-                        return self._parse_llm_response(content)
+                        parsed = self._parse_llm_response(content)
+                        if parsed is not None:
+                            return parsed
+                        repaired = self._attempt_json_repair(content)
+                        if repaired is not None:
+                            return repaired
+                elif response.status_code == 400 and "response_format" in response.text:
+                    # Fallback for providers that don't support structured output hints
+                    payload.pop("response_format", None)
+                    logger.warning("Provider rejected response_format; retrying without schema enforcement.")
+                    continue
                 elif response.status_code == 429:
                     # Rate limited - wait and retry
                     wait_time = (attempt + 1) * 2
@@ -247,6 +274,46 @@ Return ONLY valid JSON object, no markdown/code fences/no extra text."""
                 time.sleep(1 * (attempt + 1))
         
         logger.error(f"Failed to get valid response from DeepSeek after {max_retries} attempts")
+        return None
+
+    def _attempt_json_repair(self, raw_content: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Ask LLM to repair malformed JSON payload into expected triage schema."""
+        if not raw_content:
+            return None
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._api_key}"
+            }
+            repair_prompt = (
+                "Convert the following text into a valid JSON object with keys: "
+                "score, priority, reasoning, recommended_action. Return JSON only.\n\n"
+                f"INPUT:\n{raw_content}"
+            )
+            payload = {
+                "model": self._model,
+                "messages": [
+                    {"role": "system", "content": "You only output valid JSON object."},
+                    {"role": "user", "content": repair_prompt}
+                ],
+                "temperature": 0.0,
+                "max_tokens": 220
+            }
+            response = requests.post(
+                f"{self._base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=12
+            )
+            if response.status_code == 200:
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content")
+                parsed = self._parse_llm_response(content)
+                if parsed is not None:
+                    logger.info("Recovered triage response using JSON repair pass.")
+                return parsed
+        except Exception as e:
+            logger.debug(f"JSON repair pass failed: {e}")
         return None
 
     def score_victim_llm(self, victim: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
