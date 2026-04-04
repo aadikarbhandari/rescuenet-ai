@@ -7,6 +7,7 @@ import argparse
 import logging
 import sys
 import time
+import os
 from typing import List, Dict, Any
 
 from config.settings import load_settings
@@ -87,6 +88,28 @@ def normalize_victim_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def warn_if_llm_not_configured(logger: logging.Logger) -> None:
+    """
+    Show non-fatal startup warnings when LLM environment variables are missing.
+    """
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    base_url = os.getenv("DEEPSEEK_BASE_URL")
+    model = os.getenv("DEEPSEEK_MODEL")
+
+    if not api_key:
+        logger.warning("LLM is not connected (DEEPSEEK_API_KEY is missing). Running with fallback logic.")
+        logger.warning("Set env vars before running, for example:")
+        logger.warning("  export DEEPSEEK_API_KEY='your_key'")
+        logger.warning("  export DEEPSEEK_BASE_URL='https://api.vultrinference.com/v1'")
+        logger.warning("  export DEEPSEEK_MODEL='DeepSeek-V3.2'")
+        logger.warning("See README env setup table for details.")
+        return
+
+    if not base_url or not model:
+        logger.warning("DEEPSEEK_BASE_URL or DEEPSEEK_MODEL is not set; defaults will be used.")
+        logger.warning("See README env setup table for recommended values.")
+
+
 def main():
     """Main entry point for RescueNet AI."""
     parser = argparse.ArgumentParser(description='RescueNet AI - Autonomous Disaster Response')
@@ -111,6 +134,7 @@ def main():
     settings.mode = args.mode
     settings.api_enabled = True
     settings.api_port = args.api_port
+    warn_if_llm_not_configured(logger)
     
     print_startup_banner(settings)
     
