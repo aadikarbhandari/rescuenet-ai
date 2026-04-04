@@ -132,6 +132,7 @@ Production validation harness (Pass 6):
 - `python scripts/release_gate.py`
 - Runs compile checks, validation tests, and a 1-tick demo smoke test.
 - CI workflow (`.github/workflows/release-gate.yml`) runs the same gate on pull requests and main/work pushes.
+- Pass 8 adds API/reliability integration tests under `tests/test_pass8_integration.py`.
 
 ## Running the Dashboard
 
