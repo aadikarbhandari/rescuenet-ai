@@ -84,6 +84,7 @@ Key dependencies: `fastapi`, `uvicorn`, `streamlit`, `pandas`, `requests`
 | `DEEPSEEK_BASE_URL` | API endpoint | Vultr inference |
 | `DEEPSEEK_MODEL` | Model name | DeepSeek-V3.2 |
 | `RUNTIME_MODE` | `DEMO`, `AIRSIM`, or `SIM` | `DEMO` |
+| `RESCUENET_API_KEY` | Optional API key for protecting REST endpoints | Unset (auth off) |
 
 ## Running Demo Mode
 
@@ -101,6 +102,10 @@ What happens:
 - FastAPI server starts on port 8000
 
 API docs available at: `http://localhost:8000/docs`
+
+If `RESCUENET_API_KEY` is set, REST endpoints (except health/docs) require:
+- `X-API-Key: <your_key>` header, or
+- `Authorization: Bearer <your_key>` header
 
 ## Running the Dashboard
 
@@ -174,6 +179,7 @@ Click the reset button in the sidebar, or restart streamlit.
 - **AirSim Integration** — full drone command execution requires Unreal Engine + GPU
 - **Thread Safety** — global state in the API server is not thread-safe under concurrent load
 - **No Authentication** — API endpoints are publicly accessible
+  - Mitigation added: optional API key auth via `RESCUENET_API_KEY` (recommended in non-demo setups)
 
 ## Production Readiness Status
 
