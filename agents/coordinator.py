@@ -7,11 +7,10 @@ import requests
 import json
 import time
 import logging
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 from config.settings import Settings
-from state.fleet_state import FleetState, DroneState, VictimState, MissionAssignment
+from state.fleet_state import FleetState, DroneState, VictimState, MissionAssignment, MissionStatus, DroneStatus
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +120,29 @@ Only include assignments where a drone can reasonably reach the victim.
             logger.warning(f"Failed to parse dispatch response: {e}")
         return []
 
+    def _get_victim_score(self, victim: Union[VictimState, Dict[str, Any]]) -> float:
+        """Extract comparable triage score from victim object or dict."""
+        if isinstance(victim, dict):
+            return float(victim.get("triage_score", victim.get("score", 0)) or 0)
+        return float(getattr(victim, "triage_score", 0) or 0)
+
+    def _get_victim_id(self, victim: Union[VictimState, Dict[str, Any]]) -> str:
+        if isinstance(victim, dict):
+            return str(victim.get("victim_id") or victim.get("id") or "unknown")
+        return str(getattr(victim, "id", "unknown"))
+
+    def _get_victim_position(self, victim: Union[VictimState, Dict[str, Any]]) -> Tuple[float, float, float]:
+        if isinstance(victim, dict):
+            if "position" in victim and isinstance(victim["position"], (list, tuple)):
+                x, y, z = (list(victim["position"]) + [0, 0, 0])[:3]
+                return float(x), float(y), float(z)
+            return float(victim.get("x", 0)), float(victim.get("y", 0)), float(victim.get("z", 0))
+        pos = getattr(victim, "position", (0, 0, 0))
+        x, y, z = (list(pos) + [0, 0, 0])[:3]
+        return float(x), float(y), float(z)
+
     def _rule_based_dispatch(self, available_drones: List[DroneState],
-                             victims: List[VictimState]) -> List[Dict[str, str]]:
+                             victims: List[Union[VictimState, Dict[str, Any]]]) -> List[Dict[str, str]]:
         """
         Rule-based dispatch fallback using greedy nearest-neighbor with priority.
         Considers: distance, battery level, victim severity.
@@ -133,7 +153,7 @@ Only include assignments where a drone can reasonably reach the victim.
 
         assignments = []
         # Sort victims by triage score (higher = more critical)
-        sorted_victims = sorted(victims, key=lambda v: v.triage_score or 0, reverse=True)
+        sorted_victims = sorted(victims, key=self._get_victim_score, reverse=True)
         
         # Create a copy of available drones to track assignments
         available_drones_copy = list(available_drones)
@@ -148,10 +168,10 @@ Only include assignments where a drone can reasonably reach the victim.
 
             for drone in available_drones_copy:
                 # Calculate 3D distance
-                dist = self._calculate_distance(drone.position, victim.position)
+                dist = self._calculate_distance(drone.position, self._get_victim_position(victim))
                 
                 # Check if drone has enough battery (at least 20%)
-                battery_sufficient = (drone.battery_level or 0) >= 20
+                battery_sufficient = (getattr(drone, "battery", 0) or 0) >= 20
                 
                 # Prefer closer drones with sufficient battery
                 if battery_sufficient and dist < best_distance:
@@ -161,20 +181,19 @@ Only include assignments where a drone can reasonably reach the victim.
             if best_drone:
                 assignments.append({
                     "drone_id": best_drone.id,
-                    "victim_id": victim.id
+                    "victim_id": self._get_victim_id(victim)
                 })
                 available_drones_copy.remove(best_drone)
-                logger.info(f"Rule-based dispatch: assigned {best_drone.id} to {victim.id} (distance: {best_distance:.1f}m)")
+                logger.info(f"Rule-based dispatch: assigned {best_drone.id} to {self._get_victim_id(victim)} (distance: {best_distance:.1f}m)")
 
         logger.info(f"Rule-based dispatch created {len(assignments)} assignments")
         return assignments
 
-    def _calculate_distance(self, pos1: Dict[str, float], pos2: Dict[str, float]) -> float:
+    def _calculate_distance(self, pos1: Tuple[float, float, float], pos2: Tuple[float, float, float]) -> float:
         """Calculate 3D Euclidean distance between two positions."""
-        dx = pos1.get('x', 0) - pos2.get('x', 0)
-        dy = pos1.get('y', 0) - pos2.get('y', 0)
-        dz = pos1.get('z', 0) - pos2.get('z', 0)
-        return (dx**2 + dy**2 + dz**2) ** 0.5
+        x1, y1, z1 = (list(pos1) + [0, 0, 0])[:3]
+        x2, y2, z2 = (list(pos2) + [0, 0, 0])[:3]
+        return ((x1 - x2)**2 + (y1 - y2)**2 + (z1 - z2)**2) ** 0.5
 
     def decide_dispatch(self, victims: List[VictimState]) -> List[Dict[str, str]]:
         """
@@ -263,19 +282,19 @@ Only include assignments where a drone can reasonably reach the victim.
                 id=f"mission_{int(time.time() * 1000)}_{drone_id}",
                 drone_id=drone_id,
                 victim_id=victim_id,
-                status="PENDING",
+                status=MissionStatus.PENDING,
                 waypoints=[
-                    list(victim.position)
+                    tuple(victim.position)
                 ],
-                created_at=datetime.now()
+                created_at=time.time()
             )
 
             # Add mission to fleet state
             self.fleet_state.add_mission(mission)
             
             # Update drone status to BUSY
-            drone.status = "BUSY"
-            drone.mission_id = mission.id
+            drone.status = DroneStatus.BUSY
+            drone.current_mission_id = mission.id
             
             # Update victim status
             victim.status = "assigned"
@@ -301,7 +320,7 @@ Only include assignments where a drone can reasonably reach the victim.
         """
         # Check for aborted/failed missions
         for mission in self.fleet_state.missions.values():
-            if mission.status in ["FAILED", "CANCELLED", "ABORTED"]:
+            if mission.status in [MissionStatus.FAILED, MissionStatus.CANCELLED]:
                 # Reassign victim
                 victim = self.fleet_state.victims.get(mission.victim_id)
                 if victim and victim.status == "assigned":
