@@ -47,21 +47,7 @@ class MockDisasterEnv(Environment):
         """Create N drones with deterministic initial states."""
         self.drones = []
         for i in range(self.num_drones):
-            sensor_quality = ["ok", "degraded", "ok"][i % 3]
-            self.drones.append({
-                "drone_id": f"drone_{i+1}",
-                "battery_percent": max(45.0, 98.0 - i * 3.0),
-                "mechanical_health": "degraded" if i % 7 == 3 else "ok",
-                "sensor_status": {"rgb": "ok", "thermal": sensor_quality, "lidar": "ok" if i % 5 else "degraded"},
-                "payload_kg": round((i % 4) * 0.6, 1),
-                "winch_status": "fault" if i % 11 == 7 else "ready",
-                "position": (10.0 + i * 8.0, 20.0 + ((i * 13) % 70), 5.0 + (i % 4)),
-                "wind_speed_ms": 2.5 + (i % 4) * 0.4,
-                "temperature_c": 22.0 + (i % 3) * 0.3,
-                "visibility_m": 1200.0 - (i % 5) * 80.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            })
+            self.drones.append(self._make_drone(i + 1))
 
     def _init_targets(self):
         """Initialize targets (victims or checkpoints) based on current mode."""
@@ -76,25 +62,70 @@ class MockDisasterEnv(Environment):
         bleeding_cycle = {"critical": "severe", "severe": "moderate", "moderate": "mild", "minor": "none"}
         self.victims = []
         for i in range(self.num_victims):
-            severity = severity_cycle[i % len(severity_cycle)]
-            self.victims.append({
-                "victim_id": f"victim_{i+1}",
-                "is_confirmed": False,
-                "position": (15.0 + (i * 11) % 90, 8.0 + (i * 17) % 90, 0.0),
-                "injury_severity": severity,
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": severity not in ("critical",),
-                "bleeding": bleeding_cycle[severity],
-                "body_temperature_c": 34.5 if severity == "critical" else (38.0 if severity == "severe" else 36.9),
-                "accessibility": max(0.2, 0.95 - (i % 7) * 0.1)
-            })
+            self.victims.append(self._make_victim(i + 1, severity_cycle, bleeding_cycle))
         # Alias for consistent access
         self.targets = self.victims
+
+    def _make_drone(self, idx: int) -> Dict[str, Any]:
+        """Create a deterministic drone record from an index (1-based)."""
+        i = idx - 1
+        sensor_quality = ["ok", "degraded", "ok"][i % 3]
+        return {
+            "drone_id": f"drone_{idx}",
+            "battery_percent": max(45.0, 98.0 - i * 3.0),
+            "mechanical_health": "degraded" if i % 7 == 3 else "ok",
+            "sensor_status": {"rgb": "ok", "thermal": sensor_quality, "lidar": "ok" if i % 5 else "degraded"},
+            "payload_kg": round((i % 4) * 0.6, 1),
+            "winch_status": "fault" if i % 11 == 7 else "ready",
+            "position": (10.0 + i * 8.0, 20.0 + ((i * 13) % 70), 5.0 + (i % 4)),
+            "wind_speed_ms": 2.5 + (i % 4) * 0.4,
+            "temperature_c": 22.0 + (i % 3) * 0.3,
+            "visibility_m": 1200.0 - (i % 5) * 80.0,
+            "current_mission": None,
+            "operational_status": "idle"
+        }
+
+    def _make_victim(self, idx: int, severity_cycle: List[str], bleeding_cycle: Dict[str, str]) -> Dict[str, Any]:
+        """Create a deterministic victim record from an index (1-based)."""
+        i = idx - 1
+        severity = severity_cycle[i % len(severity_cycle)]
+        return {
+            "victim_id": f"victim_{idx}",
+            "is_confirmed": False,
+            "position": (15.0 + (i * 11) % 90, 8.0 + (i * 17) % 90, 0.0),
+            "injury_severity": severity,
+            "detected_by": "none",
+            "first_detected_tick": 0,
+            "detection_confidence": 0.0,
+            "assigned_drone": None,
+            "mission_id": None,
+            "cooldown_until_tick": 0,
+            "conscious": severity not in ("critical",),
+            "bleeding": bleeding_cycle[severity],
+            "body_temperature_c": 34.5 if severity == "critical" else (38.0 if severity == "severe" else 36.9),
+            "accessibility": max(0.2, 0.95 - (i % 7) * 0.1)
+        }
+
+    def add_drone(self) -> str:
+        """Add one demo drone at runtime and return its id."""
+        next_id = len(self.drones) + 1
+        drone = self._make_drone(next_id)
+        self.drones.append(drone)
+        self.num_drones = len(self.drones)
+        return drone["drone_id"]
+
+    def add_victim(self) -> str:
+        """Add one rescue victim at runtime and return its id."""
+        if self._current_mode != "rescue":
+            raise RuntimeError("add_victim is only valid in rescue mode")
+        next_id = len(self.victims) + 1
+        severity_cycle = ["critical", "severe", "moderate", "minor"]
+        bleeding_cycle = {"critical": "severe", "severe": "moderate", "moderate": "mild", "minor": "none"}
+        victim = self._make_victim(next_id, severity_cycle, bleeding_cycle)
+        self.victims.append(victim)
+        self.targets = self.victims
+        self.num_victims = len(self.victims)
+        return victim["victim_id"]
 
     def _init_checkpoints(self):
         """Create infrastructure checkpoints for patrol mode."""

@@ -25,6 +25,15 @@ class TestDemoScaling(unittest.TestCase):
         self.assertEqual(len(env.get_drone_snapshots()), 14)
         self.assertEqual(len(env.get_victim_snapshots()), 9)
 
+    def test_runtime_add_drone_and_victim(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        d_id = env.add_drone()
+        v_id = env.add_victim()
+        self.assertEqual(d_id, "drone_4")
+        self.assertEqual(v_id, "victim_5")
+        self.assertEqual(len(env.get_drone_snapshots()), 4)
+        self.assertEqual(len(env.get_victim_snapshots()), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

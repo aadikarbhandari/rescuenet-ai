@@ -560,6 +560,33 @@ def main():
         
         # Manual controls
         st.subheader("🔧 Manual Controls")
+        if is_demo:
+            quick1, quick2 = st.columns(2)
+            with quick1:
+                if st.button("➕ Add Drone"):
+                    try:
+                        if hasattr(st.session_state.env, "add_drone"):
+                            new_drone_id = st.session_state.env.add_drone()
+                            st.success(f"Added {new_drone_id}")
+                            update_fleet_from_env()
+                            st.rerun()
+                        else:
+                            st.warning("Current environment does not support runtime drone creation.")
+                    except Exception as e:
+                        st.error(f"Error adding drone: {e}")
+            with quick2:
+                if st.button("➕ Add Victim"):
+                    try:
+                        if hasattr(st.session_state.env, "add_victim"):
+                            new_victim_id = st.session_state.env.add_victim()
+                            st.success(f"Added {new_victim_id}")
+                            update_fleet_from_env()
+                            st.rerun()
+                        else:
+                            st.warning("Current environment does not support runtime victim creation.")
+                    except Exception as e:
+                        st.error(f"Error adding victim: {e}")
+            st.caption("New victims are auto-dispatched when free drones are available.")
         
         if st.button("Step Simulation"):
             try:
