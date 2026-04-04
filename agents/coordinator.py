@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 
 from config.settings import Settings
 from state.fleet_state import FleetState, DroneState, VictimState, MissionAssignment, MissionStatus, DroneStatus
+from utils.reliability import resilient_post, RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +61,16 @@ class CoordinatorAgent:
         }
 
         try:
-            response = requests.post(
-                f"{base_url}/chat/completions",
+            response = resilient_post(
+                url=f"{base_url}/chat/completions",
                 headers=headers,
-                json=payload,
-                timeout=30
+                payload=payload,
+                policy=RetryPolicy(max_attempts=2, timeout_seconds=20),
+                breaker_key="coordinator_llm",
             )
+            if response is None:
+                logger.warning("Coordinator LLM request blocked by circuit breaker/retry exhaustion.")
+                return None
             response.raise_for_status()
             result = response.json()
             return result["choices"][0]["message"]["content"]

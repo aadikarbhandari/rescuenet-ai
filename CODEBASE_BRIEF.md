@@ -41,6 +41,8 @@
 - `simulation/mock_env.py`
 - `state/__init__.py`
 - `state/fleet_state.py`
+- `utils/__init__.py`
+- `utils/reliability.py`
 
 ## What each file does (concise)
 - `.gitignore` — Project config/docs/dependencies.
@@ -60,7 +62,7 @@
 - `agents/triage.py` — Triage Agent for RescueNet AI (classes: TriageVictim, TriageAgent)
 - `agents/voice.py` — PersonaPlex integration
 - `api/__init__.py` — Python module.
-- `api/server.py` — Python module. (functions: update_state, health, get_status, get_drones, get_drone)
+- `api/server.py` — Python module. (functions: update_state, _api_key_required, _extract_api_key, health, get_status)
 - `config/__init__.py` — Configuration module for RescueNet AI.
 - `config/settings.py` — Python module. (classes: RuntimeMode, LogLevel, RescueStation, AirSimSettings, DeepSeekSettings; functions: get_settings, load_settings, get_deepseek_headers, get_llm_client, reset_settings)
 - `config.json` — Project config/docs/dependencies.
@@ -83,3 +85,5 @@
 - `simulation/mock_env.py` — Deterministic mock disaster environment. (classes: MockDisasterEnv)
 - `state/__init__.py` — Python module.
 - `state/fleet_state.py` — Python module. (classes: DroneStatus, MissionStatus, DroneState, VictimState, MissionAssignment)
+- `utils/__init__.py` — Shared utilities for reliability and operational helpers.
+- `utils/reliability.py` — Reliability utilities for external service calls. (classes: RetryPolicy, CircuitBreaker; functions: _get_breaker, resilient_post)

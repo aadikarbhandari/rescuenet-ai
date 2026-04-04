@@ -16,6 +16,7 @@ The system enables real-time victim detection, injury triage, coordinated multi-
 - **Mission Lifecycle** — Full cycle: victim discovery → triage → dispatch → en route → on scene → return to base → charging → idle
 - **AI Decisions Log** — Live log of every LLM dispatch decision with timestamps and assignments
 - **Policy Guardrails** — Battery floor, reserve drone, and distance sanity checks before mission execution
+- **Reliability Layer** — Retry/backoff + circuit-breaker protection for external LLM API calls
 
 ## System Architecture
 
