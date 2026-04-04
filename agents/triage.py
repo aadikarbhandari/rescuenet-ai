@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import math
 import os
 import json
+import ast
 import logging
 import time
 import requests
@@ -86,7 +87,7 @@ CONTEXT:
 Based on the victim data and context, provide a triage assessment in JSON format with the following fields:
 - "score": integer 0-100 (higher = more urgent)
 - "priority": "critical" | "high" | "medium" | "low"
-- "reasoning": detailed explanation of the scoring decision
+- "reasoning": one short sentence (max 20 words)
 - "recommended_action": "extract" | "deliver_supplies" | "scout" | "monitor"
 
 Consider these factors:
@@ -97,7 +98,7 @@ Consider these factors:
 5. Accessibility of location (easier access = higher effective priority for extraction)
 6. Available resources and current rescue queue
 
-Return ONLY valid JSON, no additional text."""
+Return ONLY valid JSON object, no markdown/code fences/no extra text."""
         return prompt
 
     def _parse_llm_response(self, response_text: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -123,7 +124,27 @@ Return ONLY valid JSON, no additional text."""
             if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
                 response_text = response_text[start_idx:end_idx + 1]
             
-            result = json.loads(response_text)
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # Some providers return python-style dict strings with single quotes.
+                result = ast.literal_eval(response_text)
+
+            if isinstance(result, list) and result:
+                result = result[0]
+            if not isinstance(result, dict):
+                logger.warning("LLM triage response is not a JSON object; using fallback triage.")
+                return None
+
+            # Normalize common alias keys from different providers/models
+            if 'score' not in result:
+                result['score'] = result.get('triage_score', result.get('urgency_score'))
+            if 'priority' not in result:
+                result['priority'] = result.get('severity', result.get('triage_priority'))
+            if 'recommended_action' not in result:
+                result['recommended_action'] = result.get('action', result.get('recommended_next_step'))
+            if 'reasoning' not in result:
+                result['reasoning'] = result.get('reason', result.get('explanation', ''))
             
             # Validate required fields
             required_fields = ['score', 'priority', 'reasoning', 'recommended_action']
@@ -151,7 +172,7 @@ Return ONLY valid JSON, no additional text."""
             
             return result
             
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, SyntaxError, ValueError) as e:
             logger.warning(f"Failed to parse LLM response as JSON: {e}")
             logger.debug(f"Response text: {response_text[:500]}")
             return None
