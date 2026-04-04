@@ -169,7 +169,10 @@ def main():
     policy_engine = PolicyEngine(
         PolicyConfig(
             min_battery_for_new_mission=25.0,
-            min_reserve_available_drones=1
+            min_reserve_available_drones=1,
+            critical_override_score=90.0,
+            low_battery_return_threshold=20.0,
+            min_supply_drone_reserve=0,
         )
     )
     logger.info("PolicyEngine initialized")
@@ -190,6 +193,7 @@ def main():
             # Get telemetry and update fleet state
             telemetry = env.get_all_telemetry()
             fleet.update_from_telemetry(telemetry)
+            recharge_moves = policy_engine.apply_recharge_policy(env, fleet)
             
             # Security scan
             alerts = security_agent.scan_all(telemetry)
@@ -231,6 +235,9 @@ def main():
                 'victims': list(fleet.victims.values()),
                 'missions': list(fleet.missions.values()),
                 'adapters': adapter_manager.health_report(),
+                'policy': {
+                    'recharge_moves': recharge_moves,
+                },
                 'stats': {
                     'tick': tick,
                     'available_drones': len(fleet.get_available_drones()),

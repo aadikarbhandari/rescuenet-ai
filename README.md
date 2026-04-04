@@ -17,6 +17,7 @@ The system enables real-time victim detection, injury triage, coordinated multi-
 - **AI Decisions Log** — Live log of every LLM dispatch decision with timestamps and assignments
 - **Policy Guardrails** — Battery floor, reserve drone, and distance sanity checks before mission execution
 - **Reliability Layer** — Retry/backoff + circuit-breaker protection for external LLM API calls
+- **Autonomy Policy v2** — Critical override, low-battery auto-return posture, and optional supply-drone reserve policy
 
 ## System Architecture
 
