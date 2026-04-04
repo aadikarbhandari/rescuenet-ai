@@ -1,11 +1,18 @@
-from fastapi import FastAPI, HTTPException
+import os
+import hashlib
+import hmac
+from dataclasses import asdict, is_dataclass
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 import json
 import threading
 import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
+from utils.persistence import RuntimeStore
+from utils.state_store import SQLiteStateStore
 
 app = FastAPI(title="RescueNet AI API")
 
@@ -19,6 +26,10 @@ app.add_middleware(
 )
 
 # Global state
+_state_lock = threading.Lock()
+_rate_lock = threading.Lock()
+_rate_state: Dict[str, List[float]] = {}
+_db_store = SQLiteStateStore.from_path(os.getenv("RESCUENET_STATE_DB", "runtime_data/state.db"))
 _state: Dict[str, Any] = {
     "mode": "idle",
     "tick": 0,
@@ -36,10 +47,117 @@ _state: Dict[str, Any] = {
 }
 
 
+def _json_safe(value: Any) -> Any:
+    if is_dataclass(value):
+        return _json_safe(asdict(value))
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def update_state(new_state: dict) -> None:
     """Update the global _state dict with new data from simulation tick."""
     global _state
-    _state.update(new_state)
+    safe_update = _json_safe(new_state)
+    with _state_lock:
+        _state.update(safe_update)
+    try:
+        _db_store.set_many(safe_update)
+    except Exception:
+        # DB persistence is best-effort; keep API serving from in-memory state.
+        pass
+
+
+def _state_get(key: str, default: Any = None) -> Any:
+    with _state_lock:
+        if key in _state:
+            return _state.get(key, default)
+    try:
+        value = _db_store.get(key, None)
+        return default if value is None else value
+    except Exception:
+        return default
+
+
+def _api_key_required() -> bool:
+    return bool(os.getenv("RESCUENET_API_KEY"))
+
+
+def _expected_api_keys() -> List[str]:
+    raw = os.getenv("RESCUENET_API_KEY", "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+def _key_matches(expected: str, provided: str) -> bool:
+    if expected.startswith("sha256:"):
+        digest = hashlib.sha256((provided or "").encode("utf-8")).hexdigest()
+        return hmac.compare_digest(expected[len("sha256:"):], digest)
+    return hmac.compare_digest(expected, provided or "")
+
+
+def _is_rate_limited(client_ip: str) -> bool:
+    limit = int(os.getenv("RESCUENET_RATE_LIMIT_PER_MIN", "120"))
+    if limit <= 0:
+        return False
+    now = time.time()
+    with _rate_lock:
+        window = [ts for ts in _rate_state.get(client_ip, []) if now - ts <= 60.0]
+        if len(window) >= limit:
+            _rate_state[client_ip] = window
+            return True
+        window.append(now)
+        _rate_state[client_ip] = window
+        return False
+
+
+def _extract_api_key(request: Request) -> Optional[str]:
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        return x_api_key
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return None
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """
+    Optional API key auth:
+    - If RESCUENET_API_KEY is unset: auth disabled (dev/demo)
+    - If set: all endpoints except health/docs/openapi require key
+    """
+    public_paths = {"/health", "/docs", "/openapi.json", "/redoc"}
+    if request.url.path in public_paths or not _api_key_required():
+        return await call_next(request)
+
+    client_ip = request.client.host if request.client else "unknown"
+    if _is_rate_limited(client_ip):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again shortly."},
+        )
+
+    expected_keys = _expected_api_keys()
+    provided = _extract_api_key(request)
+    if not provided or not any(_key_matches(expected, provided) for expected in expected_keys):
+        with _state_lock:
+            _state.setdefault("security_alerts", []).append({
+                "timestamp": datetime.now().isoformat(),
+                "type": "auth_failure",
+                "detail": f"Unauthorized API access attempt to {request.url.path}"
+            })
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": "Unauthorized. Provide API key via X-API-Key or Authorization: Bearer <key>."
+            },
+        )
+    return await call_next(request)
 
 
 @app.get("/health")
@@ -47,8 +165,8 @@ def health() -> Dict[str, Any]:
     """Health check endpoint."""
     return {
         "status": "ok",
-        "tick": _state.get("tick", 0),
-        "mode": _state.get("mode", "idle"),
+        "tick": _state_get("tick", 0),
+        "mode": _state_get("mode", "idle"),
         "timestamp": datetime.now().isoformat()
     }
 
@@ -56,34 +174,43 @@ def health() -> Dict[str, Any]:
 @app.get("/status")
 def get_status() -> Dict[str, Any]:
     """Overall system status."""
-    drones = _state.get("drones", [])
-    missions = _state.get("missions", [])
+    with _state_lock:
+        drones = list(_state.get("drones", []))
+        missions = list(_state.get("missions", []))
     
     return {
-        "mode": _state.get("mode", "idle"),
-        "tick": _state.get("tick", 0),
-        "drones_available": _state.get("drones_available", sum(1 for d in drones if d.get("status") == "available")),
+        "mode": _state_get("mode", "idle"),
+        "tick": _state_get("tick", 0),
+        "drones_available": _state_get("drones_available", sum(1 for d in drones if d.get("status") == "available")),
         "drones_total": len(drones),
-        "active_missions": _state.get("active_missions", sum(1 for m in missions if m.get("status") == "active")),
+        "active_missions": _state_get("active_missions", sum(1 for m in missions if m.get("status") == "active")),
         "total_missions": len(missions),
-        "total_victims": len(_state.get("victims", [])),
-        "victims_rescued": _state.get("total_victims_rescued", 0),
-        "victims_lost": _state.get("total_victims_lost", 0),
-        "security_alerts_count": len(_state.get("security_alerts", [])),
-        "uptime_start": _state.get("system_start_time", ""),
+        "total_victims": len(_state_get("victims", [])),
+        "victims_rescued": _state_get("total_victims_rescued", 0),
+        "victims_lost": _state_get("total_victims_lost", 0),
+        "security_alerts_count": len(_state_get("security_alerts", [])),
+        "uptime_start": _state_get("system_start_time", ""),
     }
+
+
+@app.get("/security/auth-status")
+def auth_status() -> Dict[str, Any]:
+    """Expose whether API key authentication is currently enforced."""
+    return {"api_key_required": _api_key_required()}
 
 
 @app.get("/drones")
 def get_drones() -> List[Dict[str, Any]]:
     """List of all drone states."""
-    return _state.get("drones", [])
+    with _state_lock:
+        return list(_state.get("drones", []))
 
 
 @app.get("/drones/{drone_id}")
 def get_drone(drone_id: str) -> Dict[str, Any]:
     """Get single drone state by ID."""
-    drones = _state.get("drones", [])
+    with _state_lock:
+        drones = list(_state.get("drones", []))
     for drone in drones:
         if drone.get("id") == drone_id:
             return drone
@@ -93,7 +220,8 @@ def get_drone(drone_id: str) -> Dict[str, Any]:
 @app.get("/victims")
 def get_victims() -> List[Dict[str, Any]]:
     """All detected victims with triage scores."""
-    victims = _state.get("victims", [])
+    with _state_lock:
+        victims = list(_state.get("victims", []))
     # Sort by triage score (priority) descending
     return sorted(victims, key=lambda v: v.get("triage_score", 0), reverse=True)
 
@@ -101,31 +229,38 @@ def get_victims() -> List[Dict[str, Any]]:
 @app.get("/victims/critical")
 def get_critical_victims() -> List[Dict[str, Any]]:
     """Get only critical priority victims."""
-    return [v for v in _state.get("victims", []) if v.get("triage_priority") == "critical"]
+    with _state_lock:
+        victims = list(_state.get("victims", []))
+    return [v for v in victims if v.get("triage_priority") == "critical"]
 
 
 @app.get("/missions")
 def get_missions() -> List[Dict[str, Any]]:
     """All missions."""
-    return _state.get("missions", [])
+    with _state_lock:
+        return list(_state.get("missions", []))
 
 
 @app.get("/missions/active")
 def get_active_missions() -> List[Dict[str, Any]]:
     """Only active missions."""
-    return [m for m in _state.get("missions", []) if m.get("status") == "active"]
+    with _state_lock:
+        missions = list(_state.get("missions", []))
+    return [m for m in missions if m.get("status") == "active"]
 
 
 @app.get("/stations")
 def get_stations() -> List[Dict[str, Any]]:
     """Rescue station status."""
-    return _state.get("stations", [])
+    with _state_lock:
+        return list(_state.get("stations", []))
 
 
 @app.get("/security/alerts")
 def get_security_alerts() -> List[Dict[str, Any]]:
     """Recent security alerts."""
-    alerts = _state.get("security_alerts", [])
+    with _state_lock:
+        alerts = list(_state.get("security_alerts", []))
     # Return last 20 alerts sorted by timestamp descending
     return sorted(alerts, key=lambda a: a.get("timestamp", ""), reverse=True)[:20]
 
@@ -133,23 +268,26 @@ def get_security_alerts() -> List[Dict[str, Any]]:
 @app.get("/decisions")
 def get_decisions() -> List[Dict[str, Any]]:
     """Last 10 coordinator decisions."""
-    decisions = _state.get("decisions", [])
+    with _state_lock:
+        decisions = list(_state.get("decisions", []))
     return decisions[-10:] if len(decisions) > 10 else decisions
 
 
 @app.get("/decisions/recent")
 def get_recent_decisions(limit: int = 10) -> List[Dict[str, Any]]:
     """Get recent coordinator decisions with configurable limit."""
-    decisions = _state.get("decisions", [])
+    with _state_lock:
+        decisions = list(_state.get("decisions", []))
     return decisions[-limit:] if len(decisions) > limit else decisions
 
 
 @app.get("/analytics/summary")
 def get_analytics_summary() -> Dict[str, Any]:
     """Analytics summary for the rescue operation."""
-    drones = _state.get("drones", [])
-    missions = _state.get("missions", [])
-    victims = _state.get("victims", [])
+    with _state_lock:
+        drones = list(_state.get("drones", []))
+        missions = list(_state.get("missions", []))
+        victims = list(_state.get("victims", []))
     
     drone_stats: Dict[str, int] = {
         "total": len(drones),
@@ -173,16 +311,38 @@ def get_analytics_summary() -> Dict[str, Any]:
         "serious": sum(1 for v in victims if v.get("triage_priority") == "serious"),
         "moderate": sum(1 for v in victims if v.get("triage_priority") == "moderate"),
         "minor": sum(1 for v in victims if v.get("triage_priority") == "minor"),
-        "rescued": _state.get("total_victims_rescued", 0),
-        "lost": _state.get("total_victims_lost", 0),
+        "rescued": _state_get("total_victims_rescued", 0),
+        "lost": _state_get("total_victims_lost", 0),
     }
     
     return {
-        "tick": _state.get("tick", 0),
-        "mode": _state.get("mode", "idle"),
+        "tick": _state_get("tick", 0),
+        "mode": _state_get("mode", "idle"),
         "drone_stats": drone_stats,
         "mission_stats": mission_stats,
         "victim_stats": victim_stats,
+    }
+
+
+@app.get("/ops/metrics")
+def get_ops_metrics() -> Dict[str, Any]:
+    """Operational reliability/performance metrics from runtime loop."""
+    return dict(_state_get("ops_metrics", {}))
+
+
+@app.get("/ops/events")
+def get_ops_events(limit: int = 50) -> List[Dict[str, Any]]:
+    """Tail persisted runtime events from disk."""
+    store = RuntimeStore.from_path(os.getenv("RESCUENET_RUNTIME_DIR", "runtime_data"))
+    return store.tail_events(limit=max(1, min(limit, 500)))
+
+
+@app.get("/ops/state-backend")
+def get_state_backend() -> Dict[str, Any]:
+    """Report active state backend for API runtime data."""
+    return {
+        "backend": "sqlite_kv",
+        "db_path": os.getenv("RESCUENET_STATE_DB", "runtime_data/state.db"),
     }
 
 
@@ -201,7 +361,12 @@ def run_server_background(host: str = "0.0.0.0", port: int = 8000) -> threading.
 
 def get_state() -> Dict[str, Any]:
     """Get current global state (for external simulation access)."""
-    return _state.copy()
+    with _state_lock:
+        live = _state.copy()
+    for k in ("mode", "tick", "drones", "victims", "missions", "ops_metrics"):
+        if k not in live:
+            live[k] = _state_get(k)
+    return live
 
 
 if __name__ == "__main__":
