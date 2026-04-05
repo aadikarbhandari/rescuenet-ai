@@ -34,6 +34,7 @@ class TestDemoScaling(unittest.TestCase):
         self.assertEqual(v_id, "victim_5")
         self.assertEqual(len(env.get_drone_snapshots()), 4)
         self.assertEqual(len(env.get_victim_snapshots()), 5)
+        self.assertEqual(env.drones[-1]["mechanical_health"], "ok")
 
     def test_station_panel_uses_env_data(self):
         env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
@@ -96,6 +97,23 @@ class TestDemoScaling(unittest.TestCase):
                 env.step()
             victim = next(v for v in env.victims if v["victim_id"] == victim_id)
             self.assertEqual(victim.get("status"), "rescued")
+
+    def test_aborted_mission_returns_victim_to_discovered(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        mission_id = "mission_abort_1"
+        victim_id = env.victims[0]["victim_id"]
+        env.update_victim_assignment(victim_id, "drone_1", mission_id)
+        env.update_drone_mission("drone_1", mission_id)
+        env.active_missions[mission_id] = {"start_tick": env.tick, "duration_ticks": 5, "drone_id": "drone_1", "target_id": victim_id}
+        env.drones[0]["operational_status"] = "on_scene"
+        env.drones[0]["current_mission"] = mission_id
+        # Force abort path via random fault.
+        env.drones[0]["mechanical_health"] = "critical"
+        env.set_failure_handling_mode("recovery_drone")
+        env.step()
+        victim = next(v for v in env.victims if v["victim_id"] == victim_id)
+        self.assertEqual(victim.get("assigned_drone"), None)
+        self.assertIn(victim.get("status"), {"discovered", "undetected"})
 
     def test_failure_mode_switch_and_recovery_dispatch(self):
         env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)

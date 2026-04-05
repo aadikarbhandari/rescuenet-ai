@@ -86,7 +86,7 @@ class MockDisasterEnv(Environment):
         return {
             "drone_id": f"drone_{idx}",
             "battery_percent": max(45.0, 98.0 - i * 3.0),
-            "mechanical_health": "degraded" if i % 7 == 3 else "ok",
+            "mechanical_health": "ok",
             "sensor_status": {"rgb": "ok", "thermal": sensor_quality, "lidar": "ok" if i % 5 else "degraded"},
             "payload_kg": round((i % 4) * 0.6, 1),
             "winch_status": "fault" if i % 11 == 7 else "ready",
@@ -518,6 +518,7 @@ class MockDisasterEnv(Environment):
 
         # Track missions to complete (so we can update targets after drone loop)
         missions_to_complete = []
+        mission_outcomes: Dict[str, str] = {}
         
         # Base station position (where drones return to charge)
         base_station = (0.0, 0.0, 0.0)
@@ -535,6 +536,7 @@ class MockDisasterEnv(Environment):
             
             # Check for hardware faults - triggers unavailable_fault
             if d["mechanical_health"] == "critical" and current_status != "unavailable_fault":
+                mission_at_fault = d.get("current_mission")
                 d["current_mission"] = None  # Abort any current mission
                 strategy = self._decide_fault_strategy(d)
                 self.fault_strategy[d["drone_id"]] = strategy
@@ -545,6 +547,9 @@ class MockDisasterEnv(Environment):
                 else:
                     d["operational_status"] = "unavailable_fault"
                     print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical, marked as unavailable_fault")
+                    if mission_at_fault:
+                        missions_to_complete.append(mission_at_fault)
+                        mission_outcomes[mission_at_fault] = "aborted"
                     if strategy == "recovery_drone":
                         self._assign_recovery_drone(d["drone_id"])
                     elif strategy == "human_recovery":
@@ -637,6 +642,7 @@ class MockDisasterEnv(Environment):
                         d["operational_status"] = "returning_to_base"
                         # Record for target update
                         missions_to_complete.append(mission_id)
+                        mission_outcomes[mission_id] = "completed"
                         print(f"[MockEnv] Mission {mission_id} completed by drone {d['drone_id']}, returning to base")
                 
                 # Battery drain while on scene (high due to payload operations)
@@ -729,6 +735,7 @@ class MockDisasterEnv(Environment):
                     # If drone was on a mission, mark it for completion
                     if d["current_mission"]:
                         missions_to_complete.append(d["current_mission"])
+                        mission_outcomes[d["current_mission"]] = "aborted"
             
             # mechanical health may degrade after many ticks (independent of battery)
             if d["mechanical_health"] == "ok" and self._tick % 50 == 0:
@@ -753,10 +760,12 @@ class MockDisasterEnv(Environment):
                 # If drone was on a mission, mark it for completion/abortion
                 if d["current_mission"]:
                     missions_to_complete.append(d["current_mission"])
+                    mission_outcomes[d["current_mission"]] = "aborted"
         
         # Update targets for completed missions
         for mission_id in missions_to_complete:
             mission = self.active_missions.get(mission_id)
+            outcome = mission_outcomes.get(mission_id, "completed")
             if mission and mission.get("target_id"):
                 # Find and update the target
                 for target in self.targets:
@@ -767,19 +776,23 @@ class MockDisasterEnv(Environment):
                         # Set cooldown and mark outcome
                         target["cooldown_until_tick"] = self._tick + 2
                         if self._current_mode == "rescue":
-                            severity = str(target.get("injury_severity", "moderate")).lower()
-                            needs_stabilization = severity in ("critical", "severe") and self.rng.random() < 0.65
-                            if needs_stabilization:
-                                target["status"] = "stabilized_on_site"
-                                target["stabilized_tick"] = self._tick
-                                target["rescue_eta_tick"] = self._tick + 2
-                                self._consume_station_supplies({"first_aid_kit": 1, "water": 1, "food": 1})
-                                print(f"[MockEnv] Victim {target_id} stabilized on-site; evacuation ETA tick {target['rescue_eta_tick']}")
+                            if outcome == "completed":
+                                severity = str(target.get("injury_severity", "moderate")).lower()
+                                needs_stabilization = severity in ("critical", "severe") and self.rng.random() < 0.65
+                                if needs_stabilization:
+                                    target["status"] = "stabilized_on_site"
+                                    target["stabilized_tick"] = self._tick
+                                    target["rescue_eta_tick"] = self._tick + 2
+                                    self._consume_station_supplies({"first_aid_kit": 1, "water": 1, "food": 1})
+                                    print(f"[MockEnv] Victim {target_id} stabilized on-site; evacuation ETA tick {target['rescue_eta_tick']}")
+                                else:
+                                    target["status"] = "rescued"
+                                    target["rescued_tick"] = self._tick
+                                    self._consume_station_supplies({"first_aid_kit": 1, "water": 1, "food": 1})
+                                    print(f"[MockEnv] Victim {target_id} rescued by mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
                             else:
-                                target["status"] = "rescued"
-                                target["rescued_tick"] = self._tick
-                                self._consume_station_supplies({"first_aid_kit": 1, "water": 1, "food": 1})
-                                print(f"[MockEnv] Victim {target_id} rescued by mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
+                                target["status"] = "discovered" if str(target.get("detected_by", "none")).lower() not in ("none", "", "unknown") else "undetected"
+                                print(f"[MockEnv] Mission {mission_id} aborted; victim {target_id} returned to {target['status']}.")
                         else:
                             print(f"[MockEnv] Checkpoint {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
             # Remove from active missions tracking and add to recently completed
@@ -793,6 +806,8 @@ class MockDisasterEnv(Environment):
         # Target condition updates
         for target in self.targets:
             if self._current_mode == "rescue":
+                if target.get("status") == "assigned" and not target.get("assigned_drone"):
+                    target["status"] = "discovered" if str(target.get("detected_by", "none")).lower() not in ("none", "", "unknown") else "undetected"
                 if target.get("status") == "stabilized_on_site" and self._tick >= int(target.get("rescue_eta_tick", self._tick + 1)):
                     target["status"] = "rescued"
                     target["rescued_tick"] = self._tick
