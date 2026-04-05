@@ -104,6 +104,7 @@ def update_fleet_from_env():
     try:
         drone_snapshots = env.get_drone_snapshots()
         victim_snapshots = env.get_victim_snapshots()
+        st.session_state['drone_raw'] = {d.get('drone_id', d.get('id','')): d for d in drone_snapshots}
         
         for d in drone_snapshots:
             drone_id = d.get('drone_id', d.get('id', 'unknown'))
@@ -117,6 +118,8 @@ def update_fleet_from_env():
                 drone.status = DroneStatus.AVAILABLE
             elif status in ('charging',):
                 drone.status = DroneStatus.CHARGING
+            elif status in ('unavailable_fault', 'fault', 'repairing', 'maintenance'):
+                drone.status = DroneStatus.MAINTENANCE
             elif status in ('offline',):
                 drone.status = DroneStatus.OFFLINE
             else:
@@ -133,7 +136,7 @@ def update_fleet_from_env():
                 "position": v.get("position", (0.0, 0.0, 0.0)),
                 "severity": sev_map.get(injury, 50),
                 "triage_score": sev_map.get(injury, 50),
-                "status": v.get("status", "assigned" if v.get("assigned_drone") else "discovered"),
+                "status": v.get("status", "assigned" if v.get("assigned_drone") else "undetected"),
                 "assigned_drone_id": v.get("assigned_drone"),
                 "assigned_mission_id": v.get("mission_id"),
             }
@@ -458,7 +461,10 @@ def main():
     available_drones = len([d for d in fleet.drones.values() if d.status == DroneStatus.AVAILABLE]) if fleet else 0
     active_missions = len([d for d in fleet.drones.values() if d.current_mission_id is not None]) if fleet else 0
     
-    victims_detected = len(fleet.victims) if fleet else 0
+    victims_detected = len([
+        v for v in st.session_state.get('victim_raw', {}).values()
+        if str(v.get('detected_by', 'none')).lower() not in ('none', '', 'unknown')
+    ]) if fleet else 0
     victims_rescued = len([v for v in fleet.victims.values() if str(v.status).lower() in ("rescued", "completed")]) if fleet else 0
     
     # Top metrics row
@@ -486,6 +492,10 @@ def main():
         if fleet and fleet.drones:
             drone_data = []
             for drone_id, drone in fleet.drones.items():
+                raw = st.session_state.get('drone_raw', {}).get(drone_id, {})
+                health = raw.get("mechanical_health", "unknown")
+                if raw.get("operational_status") == "repairing":
+                    health = "repairing"
                 drone_data.append({
                     "Drone ID": drone.id,
                     "Status": drone.status.value if hasattr(drone.status, "value") else str(drone.status),
@@ -493,7 +503,7 @@ def main():
                     
                     "Mission": drone.current_mission_id if drone.current_mission_id else "None",
                     "Position": f"({drone.position[0]:.1f}, {drone.position[1]:.1f})",
-                    "Health": drone.status.value if hasattr(drone.status, "value") else str(drone.status)
+                    "Health": health
                 })
             
             df = pd.DataFrame(drone_data)
@@ -539,13 +549,20 @@ def main():
         # Check for low battery drones
         low_battery_drones = [d for d in fleet.drones.values() if d.battery <= 25] if fleet else []
         # Check for drones with mechanical issues
-        unhealthy_drones = [d for d in fleet.drones.values() if str(getattr(d.status, "value", d.status)).lower() in ['unavailable_fault', 'fault']] if fleet else []
+        unhealthy_drones = []
+        if fleet:
+            for d in fleet.drones.values():
+                raw = st.session_state.get('drone_raw', {}).get(d.id, {})
+                health = str(raw.get("mechanical_health", "ok")).lower()
+                op = str(raw.get("operational_status", "")).lower()
+                if health in ("critical", "degraded") or op in ("unavailable_fault", "fault", "repairing"):
+                    unhealthy_drones.append((d, health, op))
         
         alerts = []
         for drone in low_battery_drones:
             alerts.append(f"⚠️ {drone.id}: Low battery ({drone.battery:.1f}%)")
-        for drone in unhealthy_drones:
-            alerts.append(f"🔧 {drone.id}: Mechanical issue - {drone.status}")
+        for drone, health, op in unhealthy_drones:
+            alerts.append(f"🔧 {drone.id}: Mechanical {health} ({op or 'state_unknown'})")
         
         if alerts:
             for alert in alerts:
@@ -660,7 +677,7 @@ def main():
                 value=prev_victims,
                 step=1,
             )
-            fault_mode_options = ["auto_return_if_flyable", "human_recovery", "recovery_drone"]
+            fault_mode_options = ["llm_recovery_adaptive", "auto_return_if_flyable", "human_recovery", "recovery_drone"]
             current_mode = getattr(st.session_state.env, "get_failure_handling_mode", lambda: "auto_return_if_flyable")()
             selected_fault_mode = st.selectbox(
                 "Fault handling mode",

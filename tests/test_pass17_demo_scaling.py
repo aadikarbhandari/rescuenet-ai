@@ -89,7 +89,28 @@ class TestDemoScaling(unittest.TestCase):
         self.assertTrue(env.set_failure_handling_mode("human_recovery"))
         env.drones[0]["mechanical_health"] = "critical"
         env.step()
-        self.assertEqual(env.drones[0]["operational_status"], "unavailable_fault")
+        self.assertEqual(env.drones[0]["operational_status"], "repairing")
+
+    def test_victims_start_undetected_until_discovered(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        statuses = {v["status"] for v in env.get_victim_snapshots()}
+        self.assertEqual(statuses, {"undetected"})
+        env.step()
+        post_statuses = {v["status"] for v in env.get_victim_snapshots()}
+        self.assertTrue(post_statuses.issubset({"undetected", "discovered", "assigned", "rescued"}))
+
+    def test_idle_drones_do_not_drain_base_battery(self):
+        env = MockDisasterEnv(seed=42, num_drones=1, num_victims=1)
+        env.targets = []  # no detection/assignment activity
+        env.victims = []
+        before = env.drones[0]["battery_percent"]
+        env.step()
+        after = env.drones[0]["battery_percent"]
+        self.assertAlmostEqual(before, after, places=3)
+
+    def test_failure_mode_accepts_llm_adaptive(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        self.assertTrue(env.set_failure_handling_mode("llm_recovery_adaptive"))
 
 
 if __name__ == "__main__":

@@ -87,7 +87,7 @@ def normalize_victim_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         "position": snapshot.get("position", (0.0, 0.0, 0.0)),
         "severity": int(sev_map.get(injury, 50)),
         "triage_score": triage_score,
-        "status": "assigned" if snapshot.get("assigned_drone") else "discovered",
+        "status": "assigned" if snapshot.get("assigned_drone") else snapshot.get("status", "undetected"),
         "assigned_drone_id": snapshot.get("assigned_drone"),
         "assigned_mission_id": snapshot.get("mission_id"),
     }
