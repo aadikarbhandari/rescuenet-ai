@@ -29,15 +29,23 @@ class TestDashboardBriefModes(unittest.TestCase):
         fleet = FleetState(["drone_1"])
         with patch("dashboard.app.Settings", _SettingsNoKey):
             brief = generate_ai_dashboard_brief(env, fleet)
-        self.assertEqual(brief.get("confidence"), "fallback_no_api_key")
+        self.assertEqual(brief.get("confidence"), "ai_unavailable_no_key")
 
     def test_brief_llm_unavailable_has_explicit_fallback_reason(self):
         env = _Env()
         fleet = FleetState(["drone_1"])
-        with patch("dashboard.app.Settings", _SettingsWithKey), patch("dashboard.app.requests.post", side_effect=RuntimeError("boom")):
+        with patch("dashboard.app.Settings", _SettingsWithKey), patch("dashboard.app.resilient_post", return_value=None):
             brief = generate_ai_dashboard_brief(env, fleet)
-        self.assertEqual(brief.get("confidence"), "fallback_llm_unavailable")
+        self.assertEqual(brief.get("confidence"), "ai_unavailable_brief_timeout")
         self.assertTrue(brief.get("alerts"))
+
+    def test_brief_timeout_does_not_depend_on_ai_decision_log(self):
+        env = _Env()
+        fleet = FleetState(["drone_1"])
+        with patch("dashboard.app.Settings", _SettingsWithKey), patch("dashboard.app.resilient_post", return_value=None), patch("dashboard.app.load_ai_decisions") as mock_load_ai_decisions:
+            brief = generate_ai_dashboard_brief(env, fleet)
+        self.assertEqual(brief.get("confidence"), "ai_unavailable_brief_timeout")
+        mock_load_ai_decisions.assert_not_called()
 
 
 if __name__ == "__main__":

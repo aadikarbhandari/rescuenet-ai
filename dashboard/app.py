@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
+from utils.reliability import RetryPolicy, resilient_post
 
 # Import existing backend modules
 from simulation.factory import get_environment
@@ -249,7 +250,7 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
     }
 
     if not api_key or api_key == "YOUR_API_KEY_HERE":
-        fallback["confidence"] = "fallback_no_api_key"
+        fallback["confidence"] = "ai_unavailable_no_key"
         fallback["alerts"] = ["LLM key not configured; using deterministic operations brief."]
         return fallback
 
@@ -269,12 +270,17 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
         "max_tokens": 250,
     }
     try:
-        r = requests.post(
-            f"{base_url}/chat/completions",
+        r = resilient_post(
+            url=f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=4,
+            payload=payload,
+            policy=RetryPolicy(max_attempts=2, timeout_seconds=12),
+            breaker_key="dashboard_ai_brief",
         )
+        if r is None:
+            fallback["alerts"] = ["AI briefing service timed out/unavailable. Using deterministic brief."]
+            fallback["confidence"] = "ai_unavailable_brief_timeout"
+            return fallback
         r.raise_for_status()
         content = r.json()["choices"][0]["message"]["content"]
         start_idx = content.find("{")
@@ -282,11 +288,11 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
         if start_idx != -1 and end_idx != -1:
             parsed = json.loads(content[start_idx:end_idx+1])
             if isinstance(parsed, dict):
-                parsed["confidence"] = parsed.get("confidence", "llm_live")
+                parsed["confidence"] = parsed.get("confidence", "ai_live")
                 return parsed
     except Exception as e:
-        fallback["alerts"] = [f"LLM brief unavailable: {type(e).__name__}. Using deterministic brief."]
-        fallback["confidence"] = "fallback_llm_unavailable"
+        fallback["alerts"] = [f"AI brief unavailable: {type(e).__name__}. Using deterministic brief."]
+        fallback["confidence"] = "ai_unavailable_brief_error"
     return fallback
 
 def get_battery_color(battery: float) -> str:

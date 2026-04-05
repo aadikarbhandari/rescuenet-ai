@@ -169,7 +169,7 @@ Dashboard: `http://localhost:8501`
 - **Active Missions** — Scalable mission table (preview + full-list expander for large fleets)
 - **Victim Triage Panel** — Severity scoring, detected-by drone, assigned drone, status (Discovered/Assigned)
 - **AI Decisions Log** — Real-time log of every LLM dispatch decision with timestamps and full assignment details
-- **AI Brief Transparency** — Operations brief confidence explicitly reports `llm_live` vs fallback reason (`fallback_no_api_key` / `fallback_llm_unavailable`)
+- **AI Brief Transparency** — Operations brief confidence is derived only from the brief API call outcome (`ai_live`, `ai_unavailable_*`) instead of generic fallback labels
 - **Security Alerts** — GPS spoofing and signal jamming detections
 - **Demo Controls** — Apply scenario size instantly, add drones/victims, and manage station supplies
 - **Rescue Stations Panel** — Live station inventory (first aid/water/food), charging slots, drones present
