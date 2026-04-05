@@ -167,7 +167,7 @@ Dashboard: `http://localhost:8501`
 - **Fleet Overview** — Total drones, available count, active missions, victims detected/rescued
 - **Drone Fleet Status** — Live battery levels, positions, mission assignments, health status
 - **Active Missions** — Scalable mission table (preview + full-list expander for large fleets)
-- **Victim Triage Panel** — Severity scoring, detected-by drone, assigned drone, status (Discovered/Assigned)
+- **Victim Triage Panel** — Severity scoring, detected-by drone, assigned drone, status lifecycle (`Undetected` → `Discovered` → `Assigned` → `Stabilized On Site`/`Rescued`)
 - **AI Decisions Log** — Real-time log of every LLM dispatch decision with timestamps and full assignment details
 - **AI Brief Transparency** — Operations brief confidence is derived only from the brief API call outcome (`ai_live`, `ai_unavailable_brief_timeout`, `ai_unavailable_brief_parse`, `ai_unavailable_brief_error`, `ai_unavailable_no_key`)
 - **Security Alerts** — GPS spoofing and signal jamming detections

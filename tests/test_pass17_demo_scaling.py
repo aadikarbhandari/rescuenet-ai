@@ -66,6 +66,7 @@ class TestDemoScaling(unittest.TestCase):
         before = env.get_station_status()[0]["supplies"]["first_aid_kit"]
         mission_id = "mission_test_1"
         victim_id = env.victims[0]["victim_id"]
+        env.victims[0]["injury_severity"] = "minor"  # force immediate rescue path
         env.update_victim_assignment(victim_id, "drone_1", mission_id)
         env.update_drone_mission("drone_1", mission_id)
         env.drones[0]["position"] = env.victims[0]["position"]
@@ -76,6 +77,25 @@ class TestDemoScaling(unittest.TestCase):
         self.assertEqual(victim.get("status"), "rescued")
         after = env.get_station_status()[0]["supplies"]["first_aid_kit"]
         self.assertLessEqual(after, before)
+
+    def test_critical_victim_can_stabilize_then_rescue(self):
+        env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
+        mission_id = "mission_test_critical"
+        victim_id = env.victims[0]["victim_id"]
+        env.victims[0]["injury_severity"] = "critical"
+        env.update_victim_assignment(victim_id, "drone_1", mission_id)
+        env.update_drone_mission("drone_1", mission_id)
+        env.drones[0]["position"] = env.victims[0]["position"]
+        env.drones[0]["operational_status"] = "on_scene"
+        env.active_missions[mission_id] = {"start_tick": env.tick - 5, "duration_ticks": 1, "drone_id": "drone_1", "target_id": victim_id}
+        env.step()
+        victim = next(v for v in env.victims if v["victim_id"] == victim_id)
+        self.assertIn(victim.get("status"), {"stabilized_on_site", "rescued"})
+        if victim.get("status") == "stabilized_on_site":
+            for _ in range(3):
+                env.step()
+            victim = next(v for v in env.victims if v["victim_id"] == victim_id)
+            self.assertEqual(victim.get("status"), "rescued")
 
     def test_failure_mode_switch_and_recovery_dispatch(self):
         env = MockDisasterEnv(seed=42, num_drones=3, num_victims=4)
@@ -97,7 +117,7 @@ class TestDemoScaling(unittest.TestCase):
         self.assertEqual(statuses, {"undetected"})
         env.step()
         post_statuses = {v["status"] for v in env.get_victim_snapshots()}
-        self.assertTrue(post_statuses.issubset({"undetected", "discovered", "assigned", "rescued"}))
+        self.assertTrue(post_statuses.issubset({"undetected", "discovered", "assigned", "stabilized_on_site", "rescued"}))
 
     def test_idle_drones_do_not_drain_base_battery(self):
         env = MockDisasterEnv(seed=42, num_drones=1, num_victims=1)

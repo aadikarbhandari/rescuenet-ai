@@ -166,15 +166,15 @@ def create_new_assignments():
     victim_raw = st.session_state.get('victim_raw', {})
     victim_objs = list(fleet.victims.values())
     available_victims = [
-        v for v in victim_objs
-        if (
-            v.assigned_drone_id is None
-            and str(v.status).lower() not in ("rescued", "completed")
-            and (
-                bool(victim_raw.get(v.id, {}).get("is_confirmed"))
-                or str(victim_raw.get(v.id, {}).get("detected_by", "none")).lower() not in ("none", "", "unknown")
+            v for v in victim_objs
+            if (
+                v.assigned_drone_id is None
+                and str(v.status).lower() not in ("rescued", "completed", "stabilized_on_site")
+                and (
+                    bool(victim_raw.get(v.id, {}).get("is_confirmed"))
+                    or str(victim_raw.get(v.id, {}).get("detected_by", "none")).lower() not in ("none", "", "unknown")
+                )
             )
-        )
     ]
 
     if available_victims:
@@ -337,16 +337,17 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
         "alerts (array of short strings), confidence (string). "
         "Context: " + json.dumps(context)
     )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You generate concise emergency-ops dashboard summaries in strict JSON."},
-            {"role": "user", "content": prompt + " Return ONLY valid JSON. Do not include markdown fences."},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 450,
-    }
-    try:
+    def _request_brief_json(strict: bool = False) -> tuple[str, Dict[str, Any] | None]:
+        strict_tail = " Return ONLY valid compact JSON. No prose, no markdown, no code fences." if strict else " Return ONLY valid JSON. Do not include markdown fences."
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You generate concise emergency-ops dashboard summaries in strict JSON."},
+                {"role": "user", "content": prompt + strict_tail},
+            ],
+            "temperature": 0.0 if strict else 0.2,
+            "max_tokens": 500 if strict else 450,
+        }
         r = resilient_post(
             url=f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -355,9 +356,7 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
             breaker_key="dashboard_ai_brief",
         )
         if r is None:
-            fallback["alerts"] = ["AI briefing service timed out/unavailable. Using deterministic brief."]
-            fallback["confidence"] = "ai_unavailable_brief_timeout"
-            return fallback
+            return ("no_response", None)
         r.raise_for_status()
         body = r.json()
         choices = body.get("choices", []) if isinstance(body, dict) else []
@@ -365,10 +364,26 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
         content_text = _coerce_message_content_to_text(message)
         parsed = _extract_first_json_object(content_text)
         if isinstance(parsed, dict):
+            return ("ok", parsed)
+        return ("parse_error", None)
+
+    try:
+        status, parsed = _request_brief_json(strict=False)
+        if parsed is None:
+            # One strict-format follow-up attempt for providers that prepend prose/fences.
+            status2, parsed = _request_brief_json(strict=True)
+            status = status2 if status != "no_response" else status
+        if parsed is None:
+            if status == "no_response":
+                fallback["alerts"] = ["AI briefing service timed out/unavailable. Using deterministic brief."]
+                fallback["confidence"] = "ai_unavailable_brief_timeout"
+            else:
+                fallback["alerts"] = ["AI brief response was not valid JSON. Using deterministic brief."]
+                fallback["confidence"] = "ai_unavailable_brief_parse"
+            return fallback
+        if isinstance(parsed, dict):
             parsed["confidence"] = parsed.get("confidence", "ai_live")
             return parsed
-        fallback["alerts"] = ["AI brief response was not valid JSON. Using deterministic brief."]
-        fallback["confidence"] = "ai_unavailable_brief_parse"
         return fallback
     except Exception as e:
         fallback["alerts"] = [f"AI brief unavailable: {type(e).__name__} ({e}). Using deterministic brief."]
@@ -512,7 +527,7 @@ def main():
                 # Apply styling for battery
                 st.dataframe(
                     df.style.map(get_battery_style, subset=['Battery']),
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True
                 )
             else:
@@ -534,10 +549,10 @@ def main():
                     "Battery": f"{drone.battery:.1f}%",
                 } for drone_id, drone in active_mission_list]
                 preview = mission_rows[:25]
-                st.dataframe(pd.DataFrame(preview), use_container_width=True, hide_index=True, height=280)
+                st.dataframe(pd.DataFrame(preview), width='stretch', hide_index=True, height=280)
                 if len(mission_rows) > 25:
                     with st.expander(f"Show all {len(mission_rows)} active missions"):
-                        st.dataframe(pd.DataFrame(mission_rows), use_container_width=True, hide_index=True, height=420)
+                        st.dataframe(pd.DataFrame(mission_rows), width='stretch', hide_index=True, height=420)
             else:
                 st.info("No active missions")
         
@@ -609,7 +624,7 @@ def main():
             
             st.dataframe(
                 df_victims.style.map(severity_color, subset=['Severity']),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
         else:
@@ -651,7 +666,7 @@ def main():
     
     st.dataframe(
         df_stations.style.map(supplies_color, subset=['Supplies Remaining']),
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )
     

@@ -767,12 +767,19 @@ class MockDisasterEnv(Environment):
                         # Set cooldown and mark outcome
                         target["cooldown_until_tick"] = self._tick + 2
                         if self._current_mode == "rescue":
-                            target["status"] = "rescued"
-                            target["rescued_tick"] = self._tick
-                            self._consume_station_supplies()
-                        
-                        if self._current_mode == "rescue":
-                            print(f"[MockEnv] Victim {target_id} rescued by mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
+                            severity = str(target.get("injury_severity", "moderate")).lower()
+                            needs_stabilization = severity in ("critical", "severe") and self.rng.random() < 0.65
+                            if needs_stabilization:
+                                target["status"] = "stabilized_on_site"
+                                target["stabilized_tick"] = self._tick
+                                target["rescue_eta_tick"] = self._tick + 2
+                                self._consume_station_supplies({"first_aid_kit": 1, "water": 1, "food": 1})
+                                print(f"[MockEnv] Victim {target_id} stabilized on-site; evacuation ETA tick {target['rescue_eta_tick']}")
+                            else:
+                                target["status"] = "rescued"
+                                target["rescued_tick"] = self._tick
+                                self._consume_station_supplies({"first_aid_kit": 1, "water": 1, "food": 1})
+                                print(f"[MockEnv] Victim {target_id} rescued by mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
                         else:
                             print(f"[MockEnv] Checkpoint {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
             # Remove from active missions tracking and add to recently completed
@@ -786,6 +793,11 @@ class MockDisasterEnv(Environment):
         # Target condition updates
         for target in self.targets:
             if self._current_mode == "rescue":
+                if target.get("status") == "stabilized_on_site" and self._tick >= int(target.get("rescue_eta_tick", self._tick + 1)):
+                    target["status"] = "rescued"
+                    target["rescued_tick"] = self._tick
+                    self._consume_station_supplies({"water": 1, "food": 1})
+                    print(f"[MockEnv] Victim {target.get('victim_id')} evacuated after on-site stabilization.")
                 # Victim condition updates
                 # injury severity may worsen for critical/severe
                 if target["injury_severity"] in ("critical", "severe") and self._tick % 40 == 0:
@@ -871,13 +883,16 @@ class MockDisasterEnv(Environment):
             })
         return telemetry
 
-    def _consume_station_supplies(self):
-        """Consume basic rescue supplies from primary station when victim is rescued."""
+    def _consume_station_supplies(self, usage: Dict[str, int] | None = None):
+        """Consume rescue supplies from primary station."""
         if not self.rescue_stations:
             return
+        usage = usage or {"first_aid_kit": 1, "water": 1, "food": 1}
         supply = self.rescue_stations[0].setdefault("supplies", {"first_aid_kit": 0, "water": 0, "food": 0})
-        for key in ("first_aid_kit", "water", "food"):
-            supply[key] = max(0, int(supply.get(key, 0)) - 1)
+        for key, amount in usage.items():
+            if amount <= 0:
+                continue
+            supply[key] = max(0, int(supply.get(key, 0)) - int(amount))
 
     def _update_station_occupancy(self):
         """Refresh per-station drone presence for dashboard station panel."""

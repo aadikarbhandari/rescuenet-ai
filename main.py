@@ -231,7 +231,7 @@ def main():
             triage_inputs = [
                 v for v in victim_snapshots
                 if (
-                    str(v.get("status", "")).lower() not in {"rescued", "completed"}
+                    str(v.get("status", "")).lower() not in {"rescued", "completed", "stabilized_on_site"}
                     and (
                         bool(v.get("is_confirmed"))
                         or str(v.get("detected_by", "none")).lower() not in {"none", "", "unknown"}
