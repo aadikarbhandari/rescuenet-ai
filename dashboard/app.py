@@ -346,13 +346,13 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
                 {"role": "user", "content": prompt + strict_tail},
             ],
             "temperature": 0.0 if strict else 0.2,
-            "max_tokens": 900 if strict else 700,
+            "max_tokens": 800 if strict else 650,
         }
         r = resilient_post(
             url=f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             payload=payload,
-            policy=RetryPolicy(max_attempts=1, timeout_seconds=5 if strict else 4),
+            policy=RetryPolicy(max_attempts=2, timeout_seconds=12 if strict else 10),
             breaker_key="dashboard_ai_brief",
         )
         if r is None:
