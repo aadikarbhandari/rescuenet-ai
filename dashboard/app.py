@@ -159,10 +159,18 @@ def create_new_assignments():
     fleet = st.session_state.fleet
     coordinator = st.session_state.coordinator
     
+    victim_raw = st.session_state.get('victim_raw', {})
     victim_objs = list(fleet.victims.values())
     available_victims = [
         v for v in victim_objs
-        if v.assigned_drone_id is None and str(v.status).lower() not in ("rescued", "completed")
+        if (
+            v.assigned_drone_id is None
+            and str(v.status).lower() not in ("rescued", "completed")
+            and (
+                bool(victim_raw.get(v.id, {}).get("is_confirmed"))
+                or str(victim_raw.get(v.id, {}).get("detected_by", "none")).lower() not in ("none", "", "unknown")
+            )
+        )
     ]
 
     if available_victims:
@@ -241,6 +249,8 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
     }
 
     if not api_key or api_key == "YOUR_API_KEY_HERE":
+        fallback["confidence"] = "fallback_no_api_key"
+        fallback["alerts"] = ["LLM key not configured; using deterministic operations brief."]
         return fallback
 
     prompt = (
@@ -272,9 +282,11 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
         if start_idx != -1 and end_idx != -1:
             parsed = json.loads(content[start_idx:end_idx+1])
             if isinstance(parsed, dict):
+                parsed["confidence"] = parsed.get("confidence", "llm_live")
                 return parsed
-    except Exception:
-        pass
+    except Exception as e:
+        fallback["alerts"] = [f"LLM brief unavailable: {type(e).__name__}. Using deterministic brief."]
+        fallback["confidence"] = "fallback_llm_unavailable"
     return fallback
 
 def get_battery_color(battery: float) -> str:

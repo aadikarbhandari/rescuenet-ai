@@ -227,8 +227,18 @@ def main():
                 if victim_id:
                     fleet.update_victim(normalize_victim_snapshot(vs))
             
-            # Triage: prioritize victims
-            triage_results = triage_agent.prioritize_all(victim_snapshots)
+            # Triage: prioritize only detected/confirmed victims that still need rescue
+            triage_inputs = [
+                v for v in victim_snapshots
+                if (
+                    str(v.get("status", "")).lower() not in {"rescued", "completed"}
+                    and (
+                        bool(v.get("is_confirmed"))
+                        or str(v.get("detected_by", "none")).lower() not in {"none", "", "unknown"}
+                    )
+                )
+            ]
+            triage_results = triage_agent.prioritize_all(triage_inputs) if triage_inputs else []
             metrics.llm_triage_success += sum(1 for r in triage_results if r.get("method") == "llm")
             metrics.llm_triage_fallback += sum(1 for r in triage_results if r.get("method") != "llm")
             
