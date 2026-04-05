@@ -62,6 +62,8 @@ class AirSimEnv:
         self.drone_states: Dict[str, Dict[str, Any]] = {}
         self.victims: List[Dict[str, Any]] = []
         self.rescue_stations: List[Dict[str, Any]] = []
+        self.active_missions: Dict[str, Dict[str, Any]] = {}
+        self.recently_completed_missions: List[str] = []
         
         # Flight time tracking for battery estimation
         self.flight_times: Dict[str, float] = {name: 0.0 for name in self.drone_names}
@@ -74,6 +76,11 @@ class AirSimEnv:
         self.connect()
         
         logger.info(f"AirSim environment initialized with {len(self.drone_names)} drones")
+
+    @property
+    def tick(self) -> int:
+        """Current simulation tick counter."""
+        return self._tick
     
     def _initialize_stations(self) -> None:
         """Initialize rescue stations from settings."""
@@ -530,6 +537,7 @@ class AirSimEnv:
         
         # Detect victims
         detected_victims = self.detect_victims()
+        self._update_mission_progress()
         
         # Get station status
         station_status = self.get_station_status()
@@ -542,6 +550,53 @@ class AirSimEnv:
             "stations": station_status,
             "connected": self._connected
         }
+
+    def _update_mission_progress(self) -> None:
+        """Update mission lifecycle and free completed missions."""
+        completed_ids: List[str] = []
+        for mission_id, mission in list(self.active_missions.items()):
+            drone_id = mission.get("drone_id")
+            if not drone_id or drone_id not in self.drone_states:
+                continue
+
+            telemetry = self.get_drone_telemetry(drone_id)
+            pos = (
+                float(telemetry.get("x", 0.0)),
+                float(telemetry.get("y", 0.0)),
+                float(telemetry.get("z", 0.0)),
+            )
+            target = mission.get("target", (0.0, 0.0, 0.0))
+            if not isinstance(target, (list, tuple)) or len(target) != 3:
+                target = (0.0, 0.0, 0.0)
+            dist = math.sqrt(
+                (pos[0] - target[0]) ** 2 +
+                (pos[1] - target[1]) ** 2 +
+                (pos[2] - target[2]) ** 2
+            )
+
+            # Complete either by arrival radius or timeout in ticks.
+            if dist <= 8.0 or (self._tick - mission.get("start_tick", self._tick)) >= mission.get("max_ticks", 20):
+                completed_ids.append(mission_id)
+
+        for mission_id in completed_ids:
+            mission = self.active_missions.pop(mission_id, {})
+            drone_id = mission.get("drone_id")
+            victim_id = mission.get("victim_id")
+            if drone_id in self.drone_states:
+                self.drone_states[drone_id]["status"] = "returning_to_base"
+                self.drone_states[drone_id]["current_mission"] = None
+                try:
+                    self.return_to_base(drone_id)
+                except Exception:
+                    pass
+            if victim_id:
+                for victim in self.victims:
+                    if victim.get("victim_id") == victim_id:
+                        victim["assigned_drone"] = None
+                        victim["mission_id"] = None
+                        victim["status"] = "awaiting_followup"
+                        break
+            self.recently_completed_missions.append(mission_id)
     
     def get_station_status(self) -> List[Dict[str, Any]]:
         """
@@ -614,7 +669,17 @@ class AirSimEnv:
                 "y": y,
                 "z": z,
                 "detected": False,
-                "confidence": random.uniform(0.65, 0.99)
+                "confidence": random.uniform(0.65, 0.99),
+                "injury_severity": random.choice(["critical", "severe", "moderate", "minor"]),
+                "assigned_drone": None,
+                "mission_id": None,
+                "detected_by": "airsim_sensor",
+                "is_confirmed": True,
+                "cooldown_until_tick": 0,
+                "conscious": random.choice([True, False]),
+                "bleeding": random.choice(["none", "mild", "moderate", "severe"]),
+                "body_temperature_c": random.uniform(34.0, 38.5),
+                "accessibility": random.uniform(0.3, 1.0),
             })
         
         self.victims.extend(spawned_victims)
@@ -670,7 +735,109 @@ class AirSimEnv:
             self.close()
         except:
             pass
-    
+
+    def get_drone_snapshots(self) -> List[Dict[str, Any]]:
+        """Return drone snapshots compatible with the shared Environment interface."""
+        snapshots: List[Dict[str, Any]] = []
+        for t in self.get_all_telemetry():
+            snapshots.append({
+                "id": t.get("drone_id"),
+                "drone_id": t.get("drone_id"),
+                "battery_percent": float(t.get("battery_percent", 100.0)),
+                "battery": float(t.get("battery_percent", 100.0)),
+                "mechanical_health": "ok",
+                "sensor_status": {"rgb": "ok", "thermal": "ok", "lidar": "ok"},
+                "payload_kg": 0.0,
+                "winch_status": "ready",
+                "position": (
+                    float(t.get("x", 0.0)),
+                    float(t.get("y", 0.0)),
+                    float(t.get("z", 0.0)),
+                ),
+                "wind_speed_ms": 0.0,
+                "temperature_c": 20.0,
+                "visibility_m": 1000.0,
+                "current_mission": self.drone_states.get(t.get("drone_id"), {}).get("current_mission"),
+                "operational_status": self.drone_states.get(t.get("drone_id"), {}).get("status", "idle"),
+                "status": self.drone_states.get(t.get("drone_id"), {}).get("status", "idle"),
+                "latitude": 47.641468 + float(t.get("x", 0.0)) * 0.00001,
+                "longitude": -122.140165 + float(t.get("y", 0.0)) * 0.00001,
+                "altitude": float(t.get("z", 0.0)),
+                "timestamp": self._tick,
+                "signal_strength": 90,
+                "battery_level": float(t.get("battery_percent", 100.0)),
+            })
+        return snapshots
+
+    def get_victim_snapshots(self) -> List[Dict[str, Any]]:
+        """Return normalized victim snapshots compatible with coordinator/triage."""
+        if not self.victims:
+            self.detect_victims()
+        snapshots: List[Dict[str, Any]] = []
+        for v in self.victims:
+            snapshots.append({
+                "id": v.get("victim_id"),
+                "victim_id": v.get("victim_id"),
+                "position": (
+                    float(v.get("x", 0.0)),
+                    float(v.get("y", 0.0)),
+                    float(v.get("z", 0.0)),
+                ),
+                "injury_severity": v.get("injury_severity", "moderate"),
+                "severity": v.get("injury_severity", "moderate"),
+                "detected_by": v.get("detected_by", "airsim_sensor"),
+                "assigned_drone": v.get("assigned_drone"),
+                "mission_id": v.get("mission_id"),
+                "cooldown_until_tick": int(v.get("cooldown_until_tick", 0)),
+                "conscious": bool(v.get("conscious", True)),
+                "bleeding": v.get("bleeding", "none"),
+                "body_temperature_c": float(v.get("body_temperature_c", 37.0)),
+                "accessibility": float(v.get("accessibility", 1.0)),
+                "detection_confidence": float(v.get("confidence", 0.8)),
+                "is_confirmed": bool(v.get("is_confirmed", True)),
+            })
+        return snapshots
+
+    def update_victim_assignment(self, victim_id: str, drone_id: str, mission_id: str) -> None:
+        """Mark victim assignment and initiate drone movement."""
+        victim_target = None
+        for v in self.victims:
+            if v.get("victim_id") == victim_id:
+                v["assigned_drone"] = drone_id
+                v["mission_id"] = mission_id
+                victim_target = (
+                    float(v.get("x", 0.0)),
+                    float(v.get("y", 0.0)),
+                    max(5.0, float(v.get("z", 0.0))),
+                )
+                break
+        if victim_target and drone_id in self.drone_states:
+            self.active_missions[mission_id] = {
+                "mission_id": mission_id,
+                "drone_id": drone_id,
+                "victim_id": victim_id,
+                "target": victim_target,
+                "start_tick": self._tick,
+                "max_ticks": 30,
+            }
+            self.fly_drone_to(drone_id, *victim_target, velocity=6.0)
+            self.drone_states[drone_id]["status"] = "en_route"
+            self.drone_states[drone_id]["current_mission"] = mission_id
+
+    def update_drone_mission(self, drone_id: str, mission_id: str) -> None:
+        """Attach a mission id to drone state."""
+        if drone_id in self.drone_states:
+            self.drone_states[drone_id]["current_mission"] = mission_id
+            if self.drone_states[drone_id]["status"] in {"idle", "landed"}:
+                self.drone_states[drone_id]["status"] = "assigned"
+
+    def get_completed_missions(self) -> List[str]:
+        """Return completed mission IDs since last read."""
+        completed = self.recently_completed_missions[:]
+        self.recently_completed_missions.clear()
+        return completed
+
+
     @property
     def is_connected(self) -> bool:
         """Check if connected to AirSim."""
@@ -719,3 +886,8 @@ class AirSimEnv:
                 nearest = station
         
         return nearest if nearest else self.rescue_stations[0] if self.rescue_stations else {}
+
+
+class AirSimEnvironment(AirSimEnv):
+    """Compatibility alias expected by SimulationFactory."""
+    pass
