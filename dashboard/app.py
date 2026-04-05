@@ -227,6 +227,80 @@ def _build_ops_context(env, fleet) -> Dict[str, Any]:
     }
 
 
+def _coerce_message_content_to_text(message: Any) -> str:
+    """
+    Convert provider-specific message payloads into plain text.
+    Supports:
+    - {"content": "text"}
+    - {"content": [{"type":"text","text":"..."}]}
+    - raw string message payloads
+    """
+    if isinstance(message, str):
+        return message
+    if not isinstance(message, dict):
+        return ""
+
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                txt = item.get("text")
+                if isinstance(txt, str):
+                    parts.append(txt)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        txt = content.get("text")
+        return txt if isinstance(txt, str) else ""
+    return ""
+
+
+def _extract_first_json_object(text: str) -> Dict[str, Any] | None:
+    """
+    Extract and parse the first balanced JSON object from arbitrary text.
+    Works with plain JSON and fenced markdown JSON blocks.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:idx + 1]
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
 def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
     """
     Ask LLM for operational dashboard briefing.
@@ -264,10 +338,10 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
         "model": model,
         "messages": [
             {"role": "system", "content": "You generate concise emergency-ops dashboard summaries in strict JSON."},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": prompt + " Return ONLY valid JSON. Do not include markdown fences."},
         ],
         "temperature": 0.2,
-        "max_tokens": 250,
+        "max_tokens": 450,
     }
     try:
         r = resilient_post(
@@ -282,16 +356,19 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
             fallback["confidence"] = "ai_unavailable_brief_timeout"
             return fallback
         r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"]
-        start_idx = content.find("{")
-        end_idx = content.rfind("}")
-        if start_idx != -1 and end_idx != -1:
-            parsed = json.loads(content[start_idx:end_idx+1])
-            if isinstance(parsed, dict):
-                parsed["confidence"] = parsed.get("confidence", "ai_live")
-                return parsed
+        body = r.json()
+        choices = body.get("choices", []) if isinstance(body, dict) else []
+        message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+        content_text = _coerce_message_content_to_text(message)
+        parsed = _extract_first_json_object(content_text)
+        if isinstance(parsed, dict):
+            parsed["confidence"] = parsed.get("confidence", "ai_live")
+            return parsed
+        fallback["alerts"] = ["AI brief response was not valid JSON. Using deterministic brief."]
+        fallback["confidence"] = "ai_unavailable_brief_parse"
+        return fallback
     except Exception as e:
-        fallback["alerts"] = [f"AI brief unavailable: {type(e).__name__}. Using deterministic brief."]
+        fallback["alerts"] = [f"AI brief unavailable: {type(e).__name__} ({e}). Using deterministic brief."]
         fallback["confidence"] = "ai_unavailable_brief_error"
     return fallback
 

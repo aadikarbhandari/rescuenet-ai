@@ -23,6 +23,19 @@ class _SettingsWithKey:
         deepseek_model = "model"
 
 
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError("http error")
+
+    def json(self):
+        return self._payload
+
+
 class TestDashboardBriefModes(unittest.TestCase):
     def test_brief_no_key_has_explicit_fallback_reason(self):
         env = _Env()
@@ -46,6 +59,26 @@ class TestDashboardBriefModes(unittest.TestCase):
             brief = generate_ai_dashboard_brief(env, fleet)
         self.assertEqual(brief.get("confidence"), "ai_unavailable_brief_timeout")
         mock_load_ai_decisions.assert_not_called()
+
+    def test_brief_parses_fenced_json_content(self):
+        env = _Env()
+        fleet = FleetState(["drone_1"])
+        content = """```json
+        {"headline":"Ops","priority_actions":["a","b","c"],"alerts":[]}
+        ```"""
+        payload = {"choices": [{"message": {"content": content}}]}
+        with patch("dashboard.app.Settings", _SettingsWithKey), patch("dashboard.app.resilient_post", return_value=_FakeResponse(payload)):
+            brief = generate_ai_dashboard_brief(env, fleet)
+        self.assertEqual(brief.get("confidence"), "ai_live")
+        self.assertEqual(brief.get("headline"), "Ops")
+
+    def test_brief_handles_non_string_content_without_attribute_error(self):
+        env = _Env()
+        fleet = FleetState(["drone_1"])
+        payload = {"choices": [{"message": {"content": None}}]}
+        with patch("dashboard.app.Settings", _SettingsWithKey), patch("dashboard.app.resilient_post", return_value=_FakeResponse(payload)):
+            brief = generate_ai_dashboard_brief(env, fleet)
+        self.assertEqual(brief.get("confidence"), "ai_unavailable_brief_parse")
 
 
 if __name__ == "__main__":
