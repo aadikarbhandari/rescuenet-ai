@@ -334,7 +334,7 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
     prompt = (
         "You are RescueNet operations AI. Return strict JSON with keys: "
         "headline (string), priority_actions (array of 3 short strings), "
-        "alerts (array of short strings), confidence (string). "
+        "alerts (array of short strings, max 3), confidence (string). "
         "Context: " + json.dumps(context)
     )
     def _request_brief_json(strict: bool = False) -> tuple[str, Dict[str, Any] | None]:
@@ -346,13 +346,13 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
                 {"role": "user", "content": prompt + strict_tail},
             ],
             "temperature": 0.0 if strict else 0.2,
-            "max_tokens": 500 if strict else 450,
+            "max_tokens": 900 if strict else 700,
         }
         r = resilient_post(
             url=f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             payload=payload,
-            policy=RetryPolicy(max_attempts=2, timeout_seconds=12),
+            policy=RetryPolicy(max_attempts=1, timeout_seconds=5 if strict else 4),
             breaker_key="dashboard_ai_brief",
         )
         if r is None:
@@ -389,6 +389,33 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
         fallback["alerts"] = [f"AI brief unavailable: {type(e).__name__} ({e}). Using deterministic brief."]
         fallback["confidence"] = "ai_unavailable_brief_error"
     return fallback
+
+
+def get_ai_dashboard_brief_cached(env, fleet, min_interval_seconds: float = 6.0) -> Dict[str, Any]:
+    """
+    Cache AI brief in session state to avoid blocking UI on every rerun.
+    """
+    now = time.time()
+    cached = st.session_state.get("cached_ai_brief")
+    ts = float(st.session_state.get("cached_ai_brief_ts", 0.0) or 0.0)
+    if cached and (now - ts) < min_interval_seconds:
+        return cached
+
+    fresh = generate_ai_dashboard_brief(env, fleet)
+    if str(fresh.get("confidence", "")).startswith("ai_live"):
+        st.session_state["cached_ai_brief"] = fresh
+        st.session_state["cached_ai_brief_ts"] = now
+        return fresh
+
+    # If brief parsing/call fails temporarily, keep showing last known good brief.
+    if cached:
+        cached_fallback = dict(cached)
+        alerts = list(cached_fallback.get("alerts", []))
+        alerts.append(f"Live brief refresh failed ({fresh.get('confidence','unknown')}); showing last valid AI brief.")
+        cached_fallback["alerts"] = alerts[-3:]
+        cached_fallback["confidence"] = "ai_live_cached"
+        return cached_fallback
+    return fresh
 
 def get_battery_color(battery: float) -> str:
     """Return color for battery percentage."""
@@ -461,7 +488,7 @@ def main():
 
     # AI operational overlay
     st.subheader("🧠 AI Operations Brief")
-    ai_brief = generate_ai_dashboard_brief(env, fleet)
+    ai_brief = get_ai_dashboard_brief_cached(env, fleet)
     st.markdown(f"**{ai_brief.get('headline', 'Autonomous Ops Brief')}**")
     for item in ai_brief.get("priority_actions", [])[:3]:
         st.markdown(f"- {item}")
