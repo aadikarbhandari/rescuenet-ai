@@ -23,18 +23,28 @@ class MockDisasterEnv(Environment):
             "spawn_probability": 0.2,
         }
     }
+    FAILURE_HANDLING_MODES = {
+        "auto_return_if_flyable",
+        "human_recovery",
+        "recovery_drone",
+    }
 
-    def __init__(self, seed: int = 42, initial_mode: str = "rescue"):
+    def __init__(self, seed: int = 42, initial_mode: str = "rescue", num_drones: int = 3, num_victims: int = 4):
         self.rng = random.Random(seed)
         self._tick = 0
+        self.num_drones = max(1, int(num_drones))
+        self.num_victims = max(1, int(num_victims))
         self._current_mode = initial_mode if initial_mode in self.MODES else "rescue"
         self._init_drones()
         self._init_targets()  # Initializes victims or checkpoints based on mode
         self._init_weather()
+        self._init_stations()
         # Track active missions: mission_id -> {"start_tick": int, "duration_ticks": int, "drone_id": str, "victim_id": str}
         self.active_missions = {}
         # Track missions that completed in the last step
         self.recently_completed_missions = []
+        self.failure_handling_mode = "auto_return_if_flyable"
+        self.recovery_tasks: Dict[str, Dict[str, Any]] = {}
     
     @property
     def tick(self) -> int:
@@ -42,51 +52,10 @@ class MockDisasterEnv(Environment):
         return self._tick
 
     def _init_drones(self):
-        """Create 3 drones with deterministic initial states."""
-        self.drones = [
-            {
-                "drone_id": "drone_1",
-                "battery_percent": 95.0,
-                "mechanical_health": "ok",
-                "sensor_status": {"rgb": "ok", "thermal": "ok", "lidar": "ok"},
-                "payload_kg": 0.0,
-                "winch_status": "ready",
-                "position": (10.0, 20.0, 5.0),
-                "wind_speed_ms": 2.5,
-                "temperature_c": 22.0,
-                "visibility_m": 1000.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            },
-            {
-                "drone_id": "drone_2",
-                "battery_percent": 80.0,
-                "mechanical_health": "degraded",
-                "sensor_status": {"rgb": "ok", "thermal": "degraded", "lidar": "ok"},
-                "payload_kg": 1.5,
-                "winch_status": "ready",
-                "position": (30.0, 40.0, 10.0),
-                "wind_speed_ms": 3.0,
-                "temperature_c": 21.5,
-                "visibility_m": 800.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            },
-            {
-                "drone_id": "drone_3",
-                "battery_percent": 60.0,
-                "mechanical_health": "ok",
-                "sensor_status": {"rgb": "ok", "thermal": "ok", "lidar": "degraded"},
-                "payload_kg": 0.8,
-                "winch_status": "fault",
-                "position": (50.0, 10.0, 8.0),
-                "wind_speed_ms": 4.2,
-                "temperature_c": 23.0,
-                "visibility_m": 1200.0,
-                "current_mission": None,
-                "operational_status": "idle"
-            }
-        ]
+        """Create N drones with deterministic initial states."""
+        self.drones = []
+        for i in range(self.num_drones):
+            self.drones.append(self._make_drone(i + 1))
 
     def _init_targets(self):
         """Initialize targets (victims or checkpoints) based on current mode."""
@@ -96,75 +65,135 @@ class MockDisasterEnv(Environment):
             self._init_checkpoints()
 
     def _init_victims(self):
-        """Create 2‑4 victims with deterministic initial conditions."""
-        self.victims = [
-            {
-                "victim_id": "victim_1",
-                "is_confirmed": False,
-                "position": (15.0, 25.0, 0.0),
-                "injury_severity": "critical",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": False,
-                "bleeding": "severe",
-                "body_temperature_c": 34.5,
-                "accessibility": 0.3
-            },
-            {
-                "victim_id": "victim_2",
-                "is_confirmed": False,
-                "position": (35.0, 45.0, 0.0),
-                "injury_severity": "moderate",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "mild",
-                "body_temperature_c": 36.8,
-                "accessibility": 0.8
-            },
-            {
-                "victim_id": "victim_3",
-                "is_confirmed": False,
-                "position": (55.0, 15.0, 0.0),
-                "injury_severity": "severe",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "moderate",
-                "body_temperature_c": 38.2,
-                "accessibility": 0.5
-            },
-            {
-                "victim_id": "victim_4",
-                "is_confirmed": False,
-                "position": (25.0, 5.0, 0.0),
-                "injury_severity": "minor",
-                "detected_by": "none",
-                "first_detected_tick": 0,
-                "detection_confidence": 0.0,
-                "assigned_drone": None,
-                "mission_id": None,
-                "cooldown_until_tick": 0,
-                "conscious": True,
-                "bleeding": "none",
-                "body_temperature_c": 37.0,
-                "accessibility": 0.9
-            }
-        ]
+        """Create configurable victims with deterministic initial conditions."""
+        severity_cycle = ["critical", "severe", "moderate", "minor"]
+        bleeding_cycle = {"critical": "severe", "severe": "moderate", "moderate": "mild", "minor": "none"}
+        self.victims = []
+        for i in range(self.num_victims):
+            self.victims.append(self._make_victim(i + 1, severity_cycle, bleeding_cycle))
         # Alias for consistent access
         self.targets = self.victims
+
+    def _make_drone(self, idx: int) -> Dict[str, Any]:
+        """Create a deterministic drone record from an index (1-based)."""
+        i = idx - 1
+        sensor_quality = ["ok", "degraded", "ok"][i % 3]
+        return {
+            "drone_id": f"drone_{idx}",
+            "battery_percent": max(45.0, 98.0 - i * 3.0),
+            "mechanical_health": "degraded" if i % 7 == 3 else "ok",
+            "sensor_status": {"rgb": "ok", "thermal": sensor_quality, "lidar": "ok" if i % 5 else "degraded"},
+            "payload_kg": round((i % 4) * 0.6, 1),
+            "winch_status": "fault" if i % 11 == 7 else "ready",
+            "position": (10.0 + i * 8.0, 20.0 + ((i * 13) % 70), 5.0 + (i % 4)),
+            "wind_speed_ms": 2.5 + (i % 4) * 0.4,
+            "temperature_c": 22.0 + (i % 3) * 0.3,
+            "visibility_m": 1200.0 - (i % 5) * 80.0,
+            "current_mission": None,
+            "operational_status": "idle"
+        }
+
+    def _make_victim(self, idx: int, severity_cycle: List[str], bleeding_cycle: Dict[str, str]) -> Dict[str, Any]:
+        """Create a deterministic victim record from an index (1-based)."""
+        i = idx - 1
+        severity = severity_cycle[i % len(severity_cycle)]
+        return {
+            "victim_id": f"victim_{idx}",
+            "is_confirmed": False,
+            "status": "discovered",
+            "position": (15.0 + (i * 11) % 90, 8.0 + (i * 17) % 90, 0.0),
+            "injury_severity": severity,
+            "detected_by": "none",
+            "first_detected_tick": 0,
+            "detection_confidence": 0.0,
+            "assigned_drone": None,
+            "mission_id": None,
+            "cooldown_until_tick": 0,
+            "conscious": severity not in ("critical",),
+            "bleeding": bleeding_cycle[severity],
+            "body_temperature_c": 34.5 if severity == "critical" else (38.0 if severity == "severe" else 36.9),
+            "accessibility": max(0.2, 0.95 - (i % 7) * 0.1)
+        }
+
+    def add_drone(self) -> str:
+        """Add one demo drone at runtime and return its id."""
+        next_id = len(self.drones) + 1
+        drone = self._make_drone(next_id)
+        self.drones.append(drone)
+        self.num_drones = len(self.drones)
+        return drone["drone_id"]
+
+    def add_victim(self) -> str:
+        """Add one rescue victim at runtime and return its id."""
+        if self._current_mode != "rescue":
+            raise RuntimeError("add_victim is only valid in rescue mode")
+        next_id = len(self.victims) + 1
+        severity_cycle = ["critical", "severe", "moderate", "minor"]
+        bleeding_cycle = {"critical": "severe", "severe": "moderate", "moderate": "mild", "minor": "none"}
+        victim = self._make_victim(next_id, severity_cycle, bleeding_cycle)
+        self.victims.append(victim)
+        self.targets = self.victims
+        self.num_victims = len(self.victims)
+        return victim["victim_id"]
+
+    def add_station(self, name: str = None) -> str:
+        """Add a charging/supply station at runtime and return station name."""
+        idx = len(self.rescue_stations) + 1
+        station_name = name or f"Station_{idx}"
+        self.rescue_stations.append({
+            "name": station_name,
+            "x": float((idx * 40) % 200 - 100),
+            "y": float((idx * 25) % 160 - 80),
+            "z": 0.0,
+            "supplies": {"first_aid_kit": 30, "water": 50, "food": 40},
+            "charging_slots": 8,
+            "drones_present": [],
+        })
+        return station_name
+
+    def set_failure_handling_mode(self, mode: str) -> bool:
+        """Set how demo handles mechanical-fault drones."""
+        mode = (mode or "").strip().lower()
+        if mode not in self.FAILURE_HANDLING_MODES:
+            return False
+        self.failure_handling_mode = mode
+        return True
+
+    def get_failure_handling_mode(self) -> str:
+        return self.failure_handling_mode
+
+    def _assign_recovery_drone(self, faulty_drone_id: str) -> bool:
+        """Assign an available drone to recover a faulted drone."""
+        for d in self.drones:
+            if d.get("drone_id") == faulty_drone_id:
+                continue
+            if d.get("operational_status") == "idle" and d.get("battery_percent", 0.0) > 35.0:
+                d["operational_status"] = "recovery_ops"
+                d["recovery_target"] = faulty_drone_id
+                self.recovery_tasks[faulty_drone_id] = {"helper": d["drone_id"], "start_tick": self._tick, "duration_ticks": 2}
+                print(f"[MockEnv] Recovery drone {d['drone_id']} dispatched to assist {faulty_drone_id}")
+                return True
+        return False
+
+    def remove_station(self, name: str) -> bool:
+        """Remove station by name; keeps at least one station available."""
+        if len(self.rescue_stations) <= 1:
+            return False
+        before = len(self.rescue_stations)
+        self.rescue_stations = [s for s in self.rescue_stations if s.get("name") != name]
+        return len(self.rescue_stations) < before
+
+    def update_station_supplies(self, name: str, first_aid_kit: int, water: int, food: int) -> bool:
+        """Update station supply inventory by name."""
+        for stn in self.rescue_stations:
+            if stn.get("name") == name:
+                stn["supplies"] = {
+                    "first_aid_kit": max(0, int(first_aid_kit)),
+                    "water": max(0, int(water)),
+                    "food": max(0, int(food)),
+                }
+                return True
+        return False
 
     def _init_checkpoints(self):
         """Create infrastructure checkpoints for patrol mode."""
@@ -223,6 +252,14 @@ class MockDisasterEnv(Environment):
         self.visibility = 1000.0
         self.wind_speed = 3.0
         self.temperature = 22.0
+
+    def _init_stations(self):
+        """Initialize mock rescue/charging stations for dashboard and ops views."""
+        self.rescue_stations = [
+            {"name": "Station Alpha", "x": 0.0, "y": 0.0, "z": 0.0, "supplies": {"first_aid_kit": 40, "water": 80, "food": 60}, "charging_slots": 12},
+            {"name": "Station Beta", "x": 120.0, "y": 40.0, "z": 0.0, "supplies": {"first_aid_kit": 35, "water": 70, "food": 55}, "charging_slots": 10},
+            {"name": "Station Gamma", "x": -90.0, "y": 60.0, "z": 0.0, "supplies": {"first_aid_kit": 45, "water": 90, "food": 75}, "charging_slots": 14},
+        ]
 
     def get_current_mode(self) -> str:
         """Return the current operational mode."""
@@ -419,10 +456,17 @@ class MockDisasterEnv(Environment):
             
             # Check for hardware faults - triggers unavailable_fault
             if d["mechanical_health"] == "critical" and current_status != "unavailable_fault":
-                d["operational_status"] = "unavailable_fault"
                 d["current_mission"] = None  # Abort any current mission
-                print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical, marked as unavailable_fault")
-                current_status = "unavailable_fault"
+                if self.failure_handling_mode == "auto_return_if_flyable" and d["battery_percent"] > 15.0:
+                    d["operational_status"] = "returning_to_base"
+                    print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical; auto-returning to base")
+                    current_status = "returning_to_base"
+                else:
+                    d["operational_status"] = "unavailable_fault"
+                    print(f"[MockEnv] Drone {d['drone_id']} mechanical health critical, marked as unavailable_fault")
+                    if self.failure_handling_mode == "recovery_drone":
+                        self._assign_recovery_drone(d["drone_id"])
+                    current_status = "unavailable_fault"
             
             # Handle different operational states
             if current_status == "idle":
@@ -550,14 +594,35 @@ class MockDisasterEnv(Environment):
                     d["operational_status"] = "idle"
                     print(f"[MockEnv] Drone {d['drone_id']} fully charged ({d['battery_percent']:.1f}%), now idle")
             
+            elif current_status == "recovery_ops":
+                # Recovery helper drone is assisting a faulted drone.
+                d["battery_percent"] = max(0.0, d["battery_percent"] - 0.8)
+            
             elif current_status == "unavailable_fault":
-                # Recover after 3 ticks
-                if "fault_since" not in d:
+                # Fault recovery strategy depends on selected handling mode.
+                if "fault_since" not in d or d.get("fault_since") is None:
                     d["fault_since"] = self._tick
-                elif d.get('fault_since') is not None and self._tick - d['fault_since'] >= 3:
+                wait_ticks = 3
+                if self.failure_handling_mode == "human_recovery":
+                    wait_ticks = 6
+                elif self.failure_handling_mode == "recovery_drone":
+                    task = self.recovery_tasks.get(d["drone_id"])
+                    if task and (self._tick - task.get("start_tick", self._tick)) >= task.get("duration_ticks", 2):
+                        helper = task.get("helper")
+                        for hd in self.drones:
+                            if hd.get("drone_id") == helper:
+                                hd["operational_status"] = "idle"
+                                hd["recovery_target"] = None
+                                break
+                        d["operational_status"] = "returning_to_base"
+                        d["fault_since"] = None
+                        del self.recovery_tasks[d["drone_id"]]
+                        print(f"[MockEnv] Recovery complete for {d['drone_id']}; returning to base")
+                        continue
+                if d.get('fault_since') is not None and self._tick - d['fault_since'] >= wait_ticks:
                     d["operational_status"] = "idle"
                     d["fault_since"] = None
-                    print(f"[MockEnv] Drone {d['drone_id']} recovered from fault, now idle")
+                    print(f"[MockEnv] Drone {d['drone_id']} recovered from fault via {self.failure_handling_mode}, now idle")
             
             # Base battery drain (applies to all operational states except charging and unavailable_fault)
             if current_status not in ["charging", "unavailable_fault"]:
@@ -607,17 +672,24 @@ class MockDisasterEnv(Environment):
                     if target_id == mission["target_id"]:
                         target["assigned_drone"] = None
                         target["mission_id"] = None
-                        # Set cooldown to prevent immediate reassignment (2 ticks cooldown)
+                        # Set cooldown and mark outcome
                         target["cooldown_until_tick"] = self._tick + 2
+                        if self._current_mode == "rescue":
+                            target["status"] = "rescued"
+                            target["rescued_tick"] = self._tick
+                            self._consume_station_supplies()
                         
                         if self._current_mode == "rescue":
-                            print(f"[MockEnv] Victim {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
+                            print(f"[MockEnv] Victim {target_id} rescued by mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
                         else:
                             print(f"[MockEnv] Checkpoint {target_id} freed from completed mission {mission_id}, cooldown until tick {target['cooldown_until_tick']}")
             # Remove from active missions tracking and add to recently completed
             if mission_id in self.active_missions:
                 del self.active_missions[mission_id]
                 self.recently_completed_missions.append(mission_id)
+
+        # Refresh station occupancy based on charging drones at/near base.
+        self._update_station_occupancy()
 
         # Target condition updates
         for target in self.targets:
@@ -649,6 +721,8 @@ class MockDisasterEnv(Environment):
             if target_id == victim_id:
                 target["assigned_drone"] = drone_id
                 target["mission_id"] = mission_id
+                if self._current_mode == "rescue":
+                    target["status"] = "assigned"
                 print(f"[MockEnv] Target {target_id} assigned to drone {drone_id} (mission {mission_id})")
                 break
     
@@ -704,3 +778,38 @@ class MockDisasterEnv(Environment):
                 "battery_level": d.get("battery_percent", 0.0),
             })
         return telemetry
+
+    def _consume_station_supplies(self):
+        """Consume basic rescue supplies from primary station when victim is rescued."""
+        if not self.rescue_stations:
+            return
+        supply = self.rescue_stations[0].setdefault("supplies", {"first_aid_kit": 0, "water": 0, "food": 0})
+        for key in ("first_aid_kit", "water", "food"):
+            supply[key] = max(0, int(supply.get(key, 0)) - 1)
+
+    def _update_station_occupancy(self):
+        """Refresh per-station drone presence for dashboard station panel."""
+        for stn in self.rescue_stations:
+            stn["drones_present"] = []
+        if not self.rescue_stations:
+            return
+        primary = self.rescue_stations[0]
+        for d in self.drones:
+            if d.get("operational_status") == "charging":
+                primary["drones_present"].append(d.get("drone_id"))
+
+    def get_station_status(self) -> List[Dict[str, Any]]:
+        """Return station status in a dashboard/API-friendly format."""
+        self._update_station_occupancy()
+        rows = []
+        for stn in self.rescue_stations:
+            rows.append({
+                "name": stn.get("name"),
+                "x": stn.get("x", 0.0),
+                "y": stn.get("y", 0.0),
+                "z": stn.get("z", 0.0),
+                "supplies": dict(stn.get("supplies", {})),
+                "charging_slots": int(stn.get("charging_slots", 0)),
+                "drones_present": list(stn.get("drones_present", [])),
+            })
+        return rows
