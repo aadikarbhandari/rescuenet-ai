@@ -352,10 +352,28 @@ def generate_ai_dashboard_brief(env, fleet) -> Dict[str, Any]:
             url=f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             payload=payload,
-            policy=RetryPolicy(max_attempts=2, timeout_seconds=12 if strict else 10),
+            policy=RetryPolicy(max_attempts=1, timeout_seconds=20 if strict else 15),
             breaker_key="dashboard_ai_brief",
         )
         if r is None:
+            # Last-chance direct request bypassing breaker state to avoid sticky timeout mode.
+            try:
+                direct = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=30 if strict else 25,
+                )
+                direct.raise_for_status()
+                body = direct.json()
+                choices = body.get("choices", []) if isinstance(body, dict) else []
+                message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+                content_text = _coerce_message_content_to_text(message)
+                parsed = _extract_first_json_object(content_text)
+                if isinstance(parsed, dict):
+                    return ("ok", parsed)
+            except Exception:
+                pass
             return ("no_response", None)
         r.raise_for_status()
         body = r.json()
