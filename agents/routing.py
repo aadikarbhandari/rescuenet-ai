@@ -1,3 +1,0 @@
-"""
-Navigation + jamming fallback
-"""

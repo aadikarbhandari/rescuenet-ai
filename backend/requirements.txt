@@ -1,0 +1,17 @@
+numpy<2.0       # A fundamental library for scientific computing.
+torch           # A deep learning framework that provides a flexible and efficient platform for building and training neural networks.
+torchvision     # A library that provides popular datasets, model architectures, and image transformations for computer vision tasks.
+fastapi         # A Python framework for building web APIs very quickly.
+uvicorn         # A web server that allows you to run FastAPI.
+pydantic        # A library for data validation and settings management using Python type annotations.
+websockets      # A library for building WebSocket servers and clients in Python.
+python-multipart # A library for parsing multipart/form-data, which is commonly used for file uploads in web applications.
+aiofiles        # A library for handling file operations asynchronously, which is useful for web applications that need to manage file uploads and downloads without blocking the main thread.
+opencv-python<4.9   # A library for image and video processing.
+ultralytics     # (YOLOv8) A real-time object detection model.
+langchain       # A framework for building applications with language models (LLMs).
+langgraph       # An extension of LangChain for managing complex workflows as graphs.
+pyttsx3         # A text-to-speech conversion library in Python that works offline and is compatible with both Python 2 and 3.
+msgpack-rpc-python # A library for remote procedure calls (RPC) using MessagePack, which is a binary serialization format.
+# install separately: pip install airsim --no-build-isolation
+#airsim          # A simulator for drones, cars and more, used for testing and developing autonomous systems. 
